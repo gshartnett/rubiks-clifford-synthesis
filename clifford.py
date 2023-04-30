@@ -1,7 +1,3 @@
-'''
-Add docstrings
-GPU support is incomplete and sloppy
-'''
 from typing import (
     Dict, Union, List, Tuple
 )
@@ -10,13 +6,15 @@ import tqdm
 from collections import Counter
 import numpy as np
 import torch
+import copy
+from datetime import datetime
 import torch.nn as nn
 import torch.optim as optim
-from qiskit.quantum_info import Clifford #random_clifford
+from qiskit.quantum_info import Clifford
 from qiskit.synthesis import synth_clifford_full
 from qiskit import QuantumCircuit
 import argparse
-
+from torch.utils.tensorboard import SummaryWriter
 
 GATES = ['h', 's', 'sdg', 'x', 'y', 'z', 'cx', 'swap']
 
@@ -184,7 +182,8 @@ def random_sequence(
 
 def weighted_distance_to_identity(
         clifford_element : Union[QuantumCircuit, List],
-        weight_dict : Dict
+        weight_dict : Dict,
+        CNOTs_only : bool = False
         ) -> float:
     """
     Computed a weighted distance to the identity.
@@ -197,12 +196,20 @@ def weighted_distance_to_identity(
         The Clifford element.
     weight_dict : Dict
         Edge weight dictionary of form {move : weight}.
+    CNOTs_only : bool
+        Boolean flag, if True then only count cx and swap gates.
 
     Returns
     -------
     float
         The weighted distance to the identity.
     """
+    if CNOTs_only:
+        weight_dict = {
+            'cx':1,
+            'swap':3
+            }
+
     ## input is a circuit
     if isinstance(clifford_element, QuantumCircuit):
         gate_counts = dict(clifford_element.count_ops())
@@ -213,7 +220,7 @@ def weighted_distance_to_identity(
         raise NotImplementedError(
             'Input is assumed to be either a Qiskit QuantumCircuit or a list of moves'
             )
-    weight = sum(weight_dict[key]*value for key, value in gate_counts.items())
+    weight = sum(weight_dict.get(key, 0)*value for key, value in gate_counts.items())
     return weight
 
 
@@ -343,8 +350,8 @@ def generate_data_batch(
         num_qubits : int,
         device : torch.device,
         weight_dict : Dict,
-        high : int = 40,
-        drop_phase_bit : bool = False,
+        high : Union[None, int] = None,
+        drop_phase_bits : bool = False,
         use_qiskit : bool = False
         ) -> torch.tensor:
     """
@@ -366,9 +373,9 @@ def generate_data_batch(
         PyTorch device.
     weight_dict : Dict
         Edge weight dictionary of form {move : weight}.
-    high : int, optional
-        Maximum sequence length, by default 40.
-    drop_phase_bit : bool, optional
+    high : Union[None, int], optional
+        Maximum sequence length, by default 20*n.
+    drop_phase_bits : bool, optional
         Whether the phase bits should be dropped, by default False.
     use_qiskit : bool, optional
         Whether the Qiskit built-in synthesis method should be used, by default False.
@@ -382,13 +389,16 @@ def generate_data_batch(
     seq_lens = []
     normalized_weight_dict = normalize_dict(weight_dict)
 
+    if high is None:
+        high = 20 * np.log(num_qubits)/np.log(2)
+
     for _ in range(num_batch):
         ## sample a random sequence
         sequence_length = rng.integers(low=1, high=high)
         sequence = random_sequence(rng, sequence_length, num_qubits)
         distance_raw = weighted_distance_to_identity(sequence, normalized_weight_dict)
         tableau = sequence_to_tableau(sequence, num_qubits).tableau
-        if drop_phase_bit:
+        if drop_phase_bits:
             tableau = tableau[:,:-1]
         x_batch.append(1 * tableau.flatten())
 
@@ -416,18 +426,13 @@ class Problem:
     """
     Problem class used to represent the current state
     and move set of the Clifford synthesis problem.
-
-    Returns
-    -------
-    _type_
-        _description_
     """
     def __init__(
             self,
             num_qubits,
             initial_state=None,
             seed=123,
-            high=40,
+            high=None,
             drop_phase_bits=False
             ):
 
@@ -437,10 +442,11 @@ class Problem:
         self.move_set = self.get_move_set()
         self.move_set_tableau = self.get_move_set_as_tableaus()
         self.move_set_array = self.get_move_set_as_array()
-
         if initial_state is not None:
             self.state = initial_state
         else:
+            if high is None:
+                high = int(20*np.log(num_qubits)/np.log(2))
             seq_len = self.rng.integers(low=1, high=high)
             self.state = sequence_to_tableau(
                 random_sequence(self.rng, seq_len, num_qubits), num_qubits
@@ -500,12 +506,12 @@ class Problem:
             move_arr = np.zeros((num_moves, 2*self.num_qubits, 2*self.num_qubits))
             for i_move in range(num_moves):
                 move = self.move_set[i_move]
-                move_arr[i_move, :, :] = self.move_set_tableau[move].tableau[:,:-1]
+                move_arr[i_move, :, :] = 1*self.move_set_tableau[move].tableau[:,:-1]
         else:
             move_arr = np.zeros((num_moves, 2*self.num_qubits, 2*self.num_qubits + 1))
             for i_move in range(num_moves):
                 move = self.move_set[i_move]
-                move_arr[i_move, :, :] = self.move_set_tableau[move].tableau
+                move_arr[i_move, :, :] = 1*self.move_set_tableau[move].tableau
         return move_arr
 
     def apply_move(
@@ -531,6 +537,7 @@ class Problem:
         Union[None, Clifford]
             Returns None if inplace, otherwise return the new state.
         """
+        ## THIS SHOULD USE drop_phase_bits
         if not inplace:
             return self.state & self.move_set_tableau[move]
         else:
@@ -556,6 +563,18 @@ class Problem:
         """
         move = self.move_set[self.rng.choice(len(self.move_set))]
         return move, self.apply_move(move, inplace=inplace)
+
+    def is_solution(self):
+        if self.drop_phase_bits:
+            if np.array_equal(1*self.state.tableau[:,:-1], np.eye(2*self.num_qubits)):
+                return True
+            else:
+                return False
+        else:
+            if np.array_equal(1*self.state.tableau, sequence_to_tableau([])):
+                return True
+            else:
+                return False
 
     def find_move_from_a_to_b(
             self,
@@ -637,7 +656,7 @@ def hillclimbing_random(
 
 
 def hillclimbing(
-        initial_state: Clifford,
+        initial_state : Clifford,
         lgf_model : nn.Module,
         max_iter : int = 1000,
         seed : int = 123,
@@ -678,11 +697,14 @@ def hillclimbing(
     num_moves = len(problem.move_set)
     L_current = np.inf
 
-    ## build the identity tableau
-    identity = 1 * Clifford(QuantumCircuit(lgf_model.num_qubits)).tableau
+    ## build the identity tableau (as a numpy array)
+    if problem.drop_phase_bits:
+        identity = np.eye(2*problem.num_qubits)
+    else:
+        identity = 1 * Clifford(QuantumCircuit(lgf_model.num_qubits)).tableau
 
     ## check for solution
-    if np.array_equal(1*problem.state.tableau, identity):
+    if problem.is_solution():
         result['success'] = True
         return result
 
@@ -697,27 +719,69 @@ def hillclimbing(
                 problem.move_set_array
                 ) % 2
         else:
-            ## this is probably horrificly slow
+            """
+            This is quite slow. I did some profiling experiments and confirmed that the bottleneck is
+            the first line where the tableau composition is performed, and not the casting to a numpy
+            array.
+
+            To improve this, we would need to implement a vectorized version of the `_compose_general`
+            classmethod defined here:
+            https://qiskit.org/documentation/_modules/qiskit/quantum_info/operators/symplectic/clifford.html#Clifford.compose
+            """
             candidates = [problem.state & tableau for tableau in problem.move_set_tableau.values()]
+            #candidates = [tableau & problem.state for tableau in problem.move_set_tableau.values()]
             candidates = np.asarray([candidate.tableau for candidate in candidates])
 
         ## check to see if any of the candidates are the solution
         for i_move in range(num_moves):
-            if np.array_equal(candidates[i_move], identity):
-                result['move_history'].append(problem.move_set[i_move])
-                result['move_type'].append('Solution')
-                result['success'] = True
-                with torch.no_grad():
-                    x = candidates[i_move].flatten()[None,:]
-                    result['L_history'].append(lgf_model.forward(torch.tensor(x, dtype=torch.float32)))
-                return result
+            if problem.drop_phase_bits:
+
+                ## confirm the array shape is correct
+                assert candidates.shape == (
+                    len(problem.move_set),
+                    2*problem.num_qubits,
+                    2*problem.num_qubits
+                    )
+
+                if np.array_equal(candidates[i_move], identity):
+                    result['move_history'].append(problem.move_set[i_move])
+                    result['move_type'].append('Solution')
+                    result['success'] = True
+                    with torch.no_grad():
+                        x = candidates[i_move].flatten()[None,:]
+                        result['L_history'].append(lgf_model.forward(torch.tensor(x, dtype=torch.float32)))
+                    return result
+            else:
+
+                ## confirm the array shape is correct
+                assert candidates.shape == (
+                    len(problem.move_set),
+                    2*problem.num_qubits,
+                    2*problem.num_qubits + 1
+                    )
+
+                if np.array_equal(candidates[i_move], identity):
+                    result['move_history'].append(problem.move_set[i_move])
+                    result['move_type'].append('Solution')
+                    result['success'] = True
+                    with torch.no_grad():
+                        x = candidates[i_move].flatten()[None,:]
+                        result['L_history'].append(lgf_model.forward(torch.tensor(x, dtype=torch.float32)))
+                    return result
 
         ## evaluate LGF for each candidate
         candidates = torch.tensor(candidates, dtype=torch.float32)
         candidates = torch.flatten(candidates, start_dim=1)
         with torch.no_grad():
             lgf_of_candidates = lgf_model.forward(candidates).numpy()
-        i_best = np.argmin(lgf_of_candidates)
+
+        ## pick the best candidate (with random tie breaking)
+        #i_best = np.argmin(lgf_of_candidates)
+        i_best = np.random.choice(
+            np.flatnonzero(
+                np.isclose(lgf_of_candidates, lgf_of_candidates.min())
+                )
+            )
         lgf_best = lgf_of_candidates[i_best]
 
         ## apply move (best or random)
@@ -739,13 +803,60 @@ def hillclimbing(
     return result
 
 
+def evolutionary_strategy(
+        initial_state : Clifford,
+        lgf_model : nn.Module,
+        population_size : int = 10,
+        max_iter : int = 1000,
+        seed : int = 123,
+        ) -> Dict:
+    assert initial_state.tableau.shape[0]//2 == lgf_model.num_qubits
+    result = {'success':False, 'move_history':[], 'L_history':[], 'move_type':[]}
+
+    ## create initial population
+    current_population = [
+        Problem(
+        num_qubits = lgf_model.num_qubits,
+          initial_state = initial_state
+          )
+        for _ in range(population_size)]
+
+    ## loop over iterations
+    for iter in range(max_iter):
+
+        ## create mutated population (P')
+        mutant_population = []
+        for i in range(population_size):
+            mutant = current_population[i].random_move(inplace=False)[1]
+            if mutant.is_solution():
+                print('solved it!')
+                return
+            else:
+                mutant_population.append(mutant)
+
+        ## evaluate LGF for each mutant
+        mutant_state_array = [mutant.tableau[:,:-1] for mutant in mutant_population]
+        mutant_state_array = torch.tensor(mutant_state_array, dtype=torch.float32)
+        mutant_state_array = torch.flatten(mutant_state_array, start_dim=1)
+        with torch.no_grad():
+            lgf_of_mutants = lgf_model.forward(mutant_state_array).numpy()
+
+        ## create population consisting of improved mutants only
+        strong_mutant_population = []
+
+        for i in range(population_size):
+            x = 0
+
+    return result
+
+
 def compute_weighted_steps_until_success(
         lgf_model : nn.Module,
         weight_dict : Dict,
         num_trials : int = 100,
-        max_iter : int =int(1e4),
+        max_iter : int = int(1e4),
         method : str = 'lgf'
-        ) -> List:
+        ) -> Dict:
     """
     Apply the hillclimbing algorithm a number of times to find the
     distribution of steps until success.
@@ -765,8 +876,10 @@ def compute_weighted_steps_until_success(
 
     Returns
     -------
-    List
-        A list of steps until success for each trial.
+    Dict
+        Two lists:
+            - a list of steps until success for each trial.
+            - a list of CNOTs until success for each trial.
 
     Raises
     ------
@@ -775,10 +888,12 @@ def compute_weighted_steps_until_success(
     """
     ## loop over many repetitions of the hillclimbing algorithm
     steps_until_success = []
+    CNOT_count = []
     for k in tqdm.trange(num_trials):
 
         problem = Problem(lgf_model.num_qubits, seed=k)
 
+        ## apply the synthesis method
         if method == 'lgf':
             result = hillclimbing(
                 problem.state,
@@ -786,36 +901,38 @@ def compute_weighted_steps_until_success(
                 max_iter=max_iter,
                 seed=k,
                 )
-            if result['success']:
-                steps_until_success.append(
-                    weighted_distance_to_identity(result['move_history'], weight_dict)
-                    )
-            else:
-                steps_until_success.append(None)
-
         elif method == 'random':
             result = hillclimbing_random(
                 problem.state,
                 max_iter=max_iter,
                 seed=k,
                 )
-            if result['success']:
-                steps_until_success.append(
-                    weighted_distance_to_identity(result['move_history'], weight_dict)
-                    )
-            else:
-                steps_until_success.append(None)
-
         elif method == 'qiskit':
-            circuit = synth_clifford_full(problem.state)
-            steps_until_success.append(
-                weighted_distance_to_identity(circuit, weight_dict)
-                )
-
+            ## hacky way to put the Qiskit results in the same data structure as the above
+            result = {
+                'success' : True,
+                'move_history' : synth_clifford_full(problem.state)
+                }
         else:
-            raise ValueError
+            raise NotImplementedError('synthesis method not recognized')
 
-    return steps_until_success
+        ## compute the weighted distance and CNOT count
+        if result['success']:
+            steps_until_success.append(
+                weighted_distance_to_identity(result['move_history'], weight_dict)
+                )
+            CNOT_count.append(
+                weighted_distance_to_identity(
+                    result['move_history'],
+                    weight_dict,
+                    CNOTs_only=True
+                    )
+                )
+        else:
+            steps_until_success.append(None)
+            CNOT_count.append(None)
+
+    return {'weighted_steps':steps_until_success, 'CNOTs':CNOT_count}
 
 
 def conv2d_output_dimensions(
@@ -871,7 +988,7 @@ class LGFModel(nn.Module):
             ):
         super(LGFModel, self).__init__()
         self.num_qubits = num_qubits
-        self.drop_phase_bits = drop_phase_bits # can remove support, we will always keep phase bit
+        self.drop_phase_bits = drop_phase_bits
         self.use_qiskit = use_qiskit # can remove support
 
         if drop_phase_bits:
@@ -887,14 +1004,14 @@ class LGFModel(nn.Module):
             ) for i in range(len(self.hidden_layers)-1)]
         )
         ## nn.Conv2d(in_channels, out_channels, kernel_size, stride)
-        self.conv2d_1 = nn.Conv2d(1, 1, 2, stride=1)
-        self.conv2d_2 = nn.Conv2d(1, 1, 2, stride=1) # can either use or remove support
+        #self.conv2d_1 = nn.Conv2d(1, 1, 2, stride=1)
+        #self.conv2d_2 = nn.Conv2d(1, 1, 2, stride=1) # can either use or remove support
 
-        H_input = 2*self.num_qubits + 1
-        W_input = 2*self.num_qubits
-        H_output, W_output = conv2d_output_dimensions(H_input, W_input, 2, 1)
+        #H_input = 2*self.num_qubits + 1
+        #W_input = 2*self.num_qubits
+        #H_output, W_output = conv2d_output_dimensions(H_input, W_input, 2, 1)
         #H_output, W_output = conv2d_output_dimensions(H_output, W_output, 2, 1)
-        self.fc1 = nn.Linear(H_output * W_output, 1)
+        #self.fc1 = nn.Linear(H_output * W_output, 1)
 
     def forward(self, x):
         """
@@ -927,7 +1044,7 @@ class LGFModel(nn.Module):
             lr : float,
             num_epochs : int,
             weight_dict : Dict,
-            high : int
+            high : Union[None, int] = None
             ) -> List:
         """
         Train the LGF.
@@ -942,8 +1059,8 @@ class LGFModel(nn.Module):
             Number of epochs for the training.
         weight_dict : Dict
             Edge weight dictionary of form {move : weight}.
-        high : int
-            Maximum random sequence length.
+        high : Union[None, int]
+            Maximum random sequence length, by default None.
 
         Returns
         -------
@@ -951,14 +1068,29 @@ class LGFModel(nn.Module):
             List of loss values after each epoch.
         """
         loss_history = []
+        date = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        writer = SummaryWriter(f'runs/date_{date}_num_qubits_{n}')
         optimizer = optim.Adam(self.parameters(), lr=lr)
+        #scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        #    optimizer,
+        #    max_lr=1e-3,
+        #    steps_per_epoch=1,
+        #    epochs=num_epochs
+        #    )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=100,
+            )
         loss_current = np.inf
 
-        #for epoch in tqdm.trange(num_epochs):
+        ## loop over "epochs"
         pbar = tqdm.trange(num_epochs)
         for epoch in pbar:
-            pbar.set_description("loss=%.4f" % loss_current)
 
+            ## update the progress bar
+            pbar.set_description(f'loss={loss_current:.4f}, lr={lr:.3e}')
+
+            ## sample a batch of Cliffords
             x_batch, seq_lens = generate_data_batch(
                 self.rng,
                 batch_size,
@@ -975,12 +1107,20 @@ class LGFModel(nn.Module):
             #loss = torch.mean(torch.square(out - seq_lens))
             loss = - pearson_correlation(out, seq_lens)
 
+            writer.add_scalar("loss", loss, epoch)
+            writer.add_scalar("lr", lr, epoch)
+
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
+            lr = scheduler.get_last_lr()[0]
+
             #loss_current = loss.detach().numpy().item()
             loss_current = loss.item()
             loss_history.append(loss_current)
 
+        writer.close()
         return loss_history
 
 
@@ -991,66 +1131,73 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-num_qubits',
+        '--num_qubits',
         default=5,
         type=int,
         help='number of qubits'
     )
 
     parser.add_argument(
-        '-learning_rate',
-        default=1e-5,
+        '--learning_rate',
+        default=1e-3,
         type=float,
         help='learning rate'
     )
 
     parser.add_argument(
-        '-batch_size',
+        '--batch_size',
         default=2000,
         type=int,
         help='batch size'
     )
 
     parser.add_argument(
-        '-num_epochs',
-        default=1000,
+        '--num_epochs',
+        default=500,
         type=int,
         help='number of epochs'
     )
 
     parser.add_argument(
-        '-eval_num_trials',
-        default=1000,
+        '--eval_num_trials',
+        default=2000,
         type=int,
         help='number of evaluation trials'
     )
 
     parser.add_argument(
-        '-eval_max_iter',
+        '--eval_max_iter',
         default=1000,
         type=int,
         help='maximum number of iterations for evaluation'
     )
 
     parser.add_argument(
-        '-use_gpu',
+        '--use_gpu',
         default=False,
         action=argparse.BooleanOptionalAction,
         help='Use the GPU, if available'
         )
 
     parser.add_argument(
-        '-use_qiskit',
+        '--use_qiskit',
         default=False,
         action=argparse.BooleanOptionalAction,
         help='Boost the training by using the qiskit decomposition'
         )
 
     parser.add_argument(
-        '-drop_phase_bits',
+        '--drop_phase_bits',
         default=False,
         action=argparse.BooleanOptionalAction,
         help='Drop the phase bits of the tableau'
+        )
+
+    parser.add_argument(
+        '--load_saved_model',
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help='Load a previously saved model, if available'
         )
 
     args = vars(parser.parse_args())
@@ -1063,6 +1210,15 @@ if __name__ == '__main__':
     device = torch.device("cuda" if (args['use_gpu'] and torch.cuda.is_available()) else "cpu")
     #device = torch.device('cpu')
     print(f'\nRunning with device={device}\n')
+
+    ## save directory
+    n = args['num_qubits']
+    if args['drop_phase_bits']:
+        data_dir = f'data/data_n_{n}_drop_phase_bits/'
+    else:
+        data_dir = f'data/data_n_{n}/'
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
 
     ## run hyper-parameters
     weight_dict = {
@@ -1079,27 +1235,31 @@ if __name__ == '__main__':
     drop_phase_bit = False
     use_qiskit = args['use_qiskit']
     seed = 123
-    high = int(50*np.log(args['num_qubits'])/np.log(2))
+    high = None
 
     ## iniitialize model
     lgf_model = LGFModel(
         num_qubits=args['num_qubits'],
         device=device,
         rng=np.random.default_rng(seed),
-        hidden_layers=[32, 16, 4],
+        hidden_layers=[32, 16, 4, 2],
         drop_phase_bits=args['drop_phase_bits'],
         use_qiskit=use_qiskit
         ).to(device)
 
-    ## train model
-    print('training model:')
-    loss_history = lgf_model.train(
-        batch_size=args['batch_size'],
-        lr=args['learning_rate'],
-        num_epochs=args['num_epochs'],
-        weight_dict=weight_dict,
-        high=high #not sure what a good choice is here
-        )
+    ## either load previously trained model or train from scratch
+    if args['load_saved_model'] and os.path.exists(data_dir + 'checkpoint'):
+        lgf_model.load_state_dict(torch.load(data_dir + 'checkpoint'))
+    else:
+        ## train model
+        print('training model:')
+        loss_history = lgf_model.train(
+            batch_size=args['batch_size'],
+            lr=args['learning_rate'],
+            num_epochs=args['num_epochs'],
+            weight_dict=weight_dict,
+            high=high #not sure what a good choice is here
+            )
 
     ## evaluate steps until success
     if True:
@@ -1126,24 +1286,20 @@ if __name__ == '__main__':
             )
 
     ## save
-    n = args['num_qubits']
-    data_dir = f'data/data_n_{n}/'
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-
     ## model weights
-    torch.save(lgf_model.state_dict(), data_dir + 'checkpoint')
+    if not (args['load_saved_model'] and os.path.exists(data_dir + 'checkpoint')):
+        torch.save(lgf_model.state_dict(), data_dir + 'checkpoint')
 
-    ## loss history
-    np.save(data_dir + 'loss_history', loss_history)
+        ## loss history
+        np.save(data_dir + 'loss_history', loss_history)
 
-    ## command line args
-    with open(data_dir + 'args.pkl', 'wb') as f:
-        pickle.dump(args, f)
+        ## command line args
+        with open(data_dir + 'args.pkl', 'wb') as f:
+            pickle.dump(args, f)
 
-    ## gate weight dictionary
-    with open(data_dir + 'weight_dict.pkl', 'wb') as f:
-        pickle.dump(weight_dict, f)
+        ## gate weight dictionary
+        with open(data_dir + 'weight_dict.pkl', 'wb') as f:
+            pickle.dump(weight_dict, f)
 
     ## evaluation results
     #if args['evaluate']:

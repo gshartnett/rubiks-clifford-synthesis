@@ -23,6 +23,59 @@ def test_tableau_composition():
     assert np.array_equal(term1, term2)
 
 
+def test_vectorized_tableau_composition():
+    """
+    Check that the composition of an arbitrary tableau with every tableau
+    in the move set can be vectorized using numpy's einsum. This requires
+    that the phase bits be dropped.
+    """
+
+    ## initialize the problem with a randomly chosen tableau
+    problem = cl.Problem(5, drop_phase_bits=True)
+
+    ## result using built-in Qiskit method
+    arr1 = []
+    for i in range(len(problem.move_set)):
+        arr1.append(1*problem.apply_move(problem.move_set[i]).tableau[:,:-1])
+    arr1 = np.asarray(arr1)
+
+    ## vectorized result
+    arr2 = np.einsum(
+        'ij, mjk -> mik',
+        1*problem.state.tableau[:,:-1],
+        problem.move_set_array
+        ) % 2
+
+    ## check
+    assert np.array_equal(arr1, arr2)
+
+
+def test_hillclimbing_move():
+    """
+    This is yet another test of the matrix multiplication implementation of
+    tableau composition (when the phase bits are omitted). This test was
+    specifically introduced to make sure that the code used in the Hillclimbing
+    functions had the correct order of tableau1 and tableau2 used in the
+    composition.
+    """
+    problem = cl.Problem(5)
+
+    print(problem.state.tableau.shape, problem.move_set_array.shape)
+
+    ## compute the updated tableaus via vectorized approach (omitting the phase bits)
+    candidates_1 = np.einsum(
+        'ij, mjk -> mik',
+        1*problem.state.tableau[:,:-1],
+        problem.move_set_array[:,:,:-1]
+        ) % 2
+
+    candidates_2 = [tableau & problem.state for tableau in problem.move_set_tableau.values()]
+    #candidates_2 = [problem.state & tableau for tableau in problem.move_set_tableau.values()]
+    candidates_2 = np.asarray([candidate.tableau[:,:-1] for candidate in candidates_2])
+    print('yo')
+    assert np.array_equal(candidates_1, candidates_2)
+
+
 def test_move_set(num_trials=50, num_qubits_min=2, num_qubits_max=9):
     """
     Test that the move set agrees with the move set used by the
