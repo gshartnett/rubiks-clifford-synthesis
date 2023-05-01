@@ -1,20 +1,20 @@
 from typing import (
     Dict, Union, List, Tuple
 )
-import os, pickle
-import tqdm
+import os
+import pickle
+import argparse
 from collections import Counter
+from datetime import datetime
+import tqdm
 import numpy as np
 import torch
-import copy
-from datetime import datetime
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from qiskit.quantum_info import Clifford
 from qiskit.synthesis import synth_clifford_full
 from qiskit import QuantumCircuit
-import argparse
 from torch.utils.tensorboard import SummaryWriter
+
 
 GATES = ['h', 's', 'sdg', 'x', 'y', 'z', 'cx', 'swap']
 
@@ -564,17 +564,23 @@ class Problem:
         move = self.move_set[self.rng.choice(len(self.move_set))]
         return move, self.apply_move(move, inplace=inplace)
 
-    def is_solution(self):
+    def is_solution(self) -> bool:
+        """
+        Checks whether the current problem state is the identity,
+        corresponding to the solved tableau.
+
+        Returns
+        -------
+        bool
+            Whether the current state is the identity tableau.
+        """
         if self.drop_phase_bits:
             if np.array_equal(1*self.state.tableau[:,:-1], np.eye(2*self.num_qubits)):
                 return True
-            else:
-                return False
         else:
-            if np.array_equal(1*self.state.tableau, sequence_to_tableau([])):
+            if np.array_equal(1*self.state.tableau, sequence_to_tableau([], self.num_qubits)):
                 return True
-            else:
-                return False
+        return False
 
     def find_move_from_a_to_b(
             self,
@@ -647,10 +653,9 @@ def hillclimbing_random(
             return result
 
         ## make a random move
-        else:
-            move, _ = problem.random_move()
-            result['move_history'].append(move)
-            problem.apply_move(move, inplace=True)
+        move, _ = problem.random_move()
+        result['move_history'].append(move)
+        problem.apply_move(move, inplace=True)
 
     return result
 
@@ -695,7 +700,7 @@ def hillclimbing(
         drop_phase_bits=lgf_model.drop_phase_bits
         )
     num_moves = len(problem.move_set)
-    L_current = np.inf
+    lgf_value = np.inf
 
     ## build the identity tableau (as a numpy array)
     if problem.drop_phase_bits:
@@ -748,8 +753,9 @@ def hillclimbing(
                     result['move_type'].append('Solution')
                     result['success'] = True
                     with torch.no_grad():
-                        x = candidates[i_move].flatten()[None,:]
-                        result['L_history'].append(lgf_model.forward(torch.tensor(x, dtype=torch.float32)))
+                        result['L_history'].append(lgf_model.forward(torch.tensor(
+                            candidates[i_move].flatten()[None,:], dtype=torch.float32
+                            )))
                     return result
             else:
 
@@ -765,8 +771,11 @@ def hillclimbing(
                     result['move_type'].append('Solution')
                     result['success'] = True
                     with torch.no_grad():
-                        x = candidates[i_move].flatten()[None,:]
-                        result['L_history'].append(lgf_model.forward(torch.tensor(x, dtype=torch.float32)))
+                        result['L_history'].append(
+                            lgf_model.forward(torch.tensor(
+                            candidates[i_move].flatten()[None,:], dtype=torch.float32)
+                                )
+                            )
                     return result
 
         ## evaluate LGF for each candidate
@@ -785,17 +794,17 @@ def hillclimbing(
         lgf_best = lgf_of_candidates[i_best]
 
         ## apply move (best or random)
-        if lgf_best < L_current:
-            L_current = lgf_best
-            result['L_history'].append(L_current)
+        if lgf_best < lgf_value:
+            lgf_value = lgf_best
+            result['L_history'].append(lgf_value)
             result['move_history'].append(problem.move_set[i_best])
             result['move_type'].append('LGF')
             problem.apply_move(problem.move_set[i_best], inplace=True)
         else:
             i_move = lgf_model.rng.choice(len(problem.move_set))
             move = problem.move_set[i_move]
-            L_current = lgf_of_candidates[i_move]
-            result['L_history'].append(L_current)
+            lgf_value = lgf_of_candidates[i_move]
+            result['L_history'].append(lgf_value)
             result['move_history'].append(move)
             result['move_type'].append('Random')
             problem.apply_move(move, inplace=True)
@@ -937,8 +946,8 @@ def compute_weighted_steps_until_success(
 
 
 def conv2d_output_dimensions(
-        H_input : int,
-        W_input : int,
+        height_input : int,
+        width_input : int,
         kernel_size : int,
         stride : int,
         dilation : int = 1,
@@ -951,9 +960,9 @@ def conv2d_output_dimensions(
 
     Parameters
     ----------
-    H_input : int
+    height_input : int
         The H channel dimension of the input.
-    W_input : int
+    width_input : int
         The W channel dimension of the input.
     kernel_size : int
         The kernel size.
@@ -969,9 +978,9 @@ def conv2d_output_dimensions(
     Tuple[int, int]
         The transformed H and W channel dimensions.
     """
-    H_output = (H_input + 2*padding - dilation*(kernel_size - 1) - 1) / (stride) + 1
-    W_output = (W_input + 2*padding - dilation*(kernel_size - 1) - 1) / (stride) + 1
-    return int(H_output), int(W_output)
+    height_output = (height_input + 2*padding - dilation*(kernel_size - 1) - 1) / (stride) + 1
+    width_output = (width_input + 2*padding - dilation*(kernel_size - 1) - 1) / (stride) + 1
+    return int(height_output), int(width_output)
 
 
 class LGFModel(nn.Module):
@@ -1021,7 +1030,7 @@ class LGFModel(nn.Module):
         for i, layer in enumerate(self.fc_layers):
             x = layer(x)
             if i != len(self.fc_layers) - 1:
-                x = torch.nn.Sigmoid()(x)
+                x = nn.Sigmoid()(x)
             x = torch.exp(x)
         return x.squeeze()
 
@@ -1042,7 +1051,7 @@ class LGFModel(nn.Module):
     def train(
             self,
             batch_size : int,
-            lr : float,
+            learning_rate : float,
             num_epochs : int,
             weight_dict : Dict,
             high : Union[None, int] = None
@@ -1054,7 +1063,7 @@ class LGFModel(nn.Module):
         ----------
         batch_size : int
             The batch size.
-        lr : float
+        learning_rate : float
             The learning rate.
         num_epochs : int
             Number of epochs for the training.
@@ -1068,17 +1077,17 @@ class LGFModel(nn.Module):
         List
             List of loss values after each epoch.
         """
-        loss_history = []
+        _loss_history = []
         date = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         writer = SummaryWriter(f'runs/date_{date}_num_qubits_{n}')
-        optimizer = optim.Adam(self.parameters(), lr=lr)
-        #scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        #scheduler = optim.lr_scheduler.OneCycleLR(
         #    optimizer,
         #    max_lr=1e-3,
         #    steps_per_epoch=1,
         #    epochs=num_epochs
         #    )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=100,
             )
@@ -1089,7 +1098,7 @@ class LGFModel(nn.Module):
         for epoch in pbar:
 
             ## update the progress bar
-            pbar.set_description(f'loss={loss_current:.4f}, lr={lr:.3e}')
+            pbar.set_description(f'loss={loss_current:.4f}, lr={learning_rate:.3e}')
 
             ## sample a batch of Cliffords
             x_batch, seq_lens = generate_data_batch(
@@ -1109,20 +1118,20 @@ class LGFModel(nn.Module):
             loss = - pearson_correlation(out, seq_lens)
 
             writer.add_scalar("loss", loss, epoch)
-            writer.add_scalar("lr", lr, epoch)
+            writer.add_scalar("lr", learning_rate, epoch)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             scheduler.step()
-            lr = scheduler.get_last_lr()[0]
+            learning_rate = scheduler.get_last_lr()[0]
 
             #loss_current = loss.detach().numpy().item()
             loss_current = loss.item()
-            loss_history.append(loss_current)
+            _loss_history.append(loss_current)
 
         writer.close()
-        return loss_history
+        return _loss_history
 
 
 if __name__ == '__main__':
@@ -1222,7 +1231,7 @@ if __name__ == '__main__':
         os.makedirs(data_dir)
 
     ## run hyper-parameters
-    weight_dict = {
+    WEIGHT_DICT = {
         'x':1,
         'y':1,
         'z':1,
@@ -1232,17 +1241,14 @@ if __name__ == '__main__':
         'cx':30,
         'swap':90
         }
-    #cl.normalize_dict(weight_dict)
-    drop_phase_bit = False
     use_qiskit = args['use_qiskit']
-    seed = 123
-    high = None
+    SEED = 123
 
     ## iniitialize model
     lgf_model = LGFModel(
         num_qubits=args['num_qubits'],
         device=device,
-        rng=np.random.default_rng(seed),
+        rng=np.random.default_rng(SEED),
         hidden_layers=[32, 16, 4, 2],
         drop_phase_bits=args['drop_phase_bits'],
         use_qiskit=use_qiskit
@@ -1258,8 +1264,8 @@ if __name__ == '__main__':
             batch_size=args['batch_size'],
             lr=args['learning_rate'],
             num_epochs=args['num_epochs'],
-            weight_dict=weight_dict,
-            high=high #not sure what a good choice is here
+            weight_dict=WEIGHT_DICT,
+            high=None #not sure what a good choice is here
             )
 
     ## evaluate steps until success
@@ -1271,7 +1277,7 @@ if __name__ == '__main__':
         print('evaluating hillclimbing using LGF')
         steps_until_success['lgf'] = compute_weighted_steps_until_success(
             lgf_model=lgf_model,
-            weight_dict=weight_dict,
+            weight_dict=WEIGHT_DICT,
             num_trials=args['eval_num_trials'],
             max_iter=args['eval_max_iter'],
             method='lgf'
@@ -1280,7 +1286,7 @@ if __name__ == '__main__':
         ## qiskit method
         steps_until_success['qiskit'] = compute_weighted_steps_until_success(
             lgf_model=lgf_model,
-            weight_dict=weight_dict,
+            weight_dict=WEIGHT_DICT,
             num_trials=args['eval_num_trials'],
             max_iter=args['eval_max_iter'],
             method='qiskit'
@@ -1300,7 +1306,7 @@ if __name__ == '__main__':
 
         ## gate weight dictionary
         with open(data_dir + 'weight_dict.pkl', 'wb') as f:
-            pickle.dump(weight_dict, f)
+            pickle.dump(WEIGHT_DICT, f)
 
     ## evaluation results
     #if args['evaluate']:
