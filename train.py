@@ -36,14 +36,14 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--scaling",
-        default='linear',
+        default="linear",
         type=str,
         help="scaling of the high parameter with the number of qubits, must be one of log, linear, or log-linear",
     )
 
     parser.add_argument(
         "--sampling_method",
-        default='random_walk',
+        default="random_walk",
         type=str,
         help="Sampling method used to generate Clifford elements.",
     )
@@ -89,22 +89,22 @@ if __name__ == "__main__":
     print(f"\nRunning with device={device}\n")
 
     ## maximum number of moves to consider for random sequences
-    high = cl.max_random_sequence_length(args["num_qubits"], args['scaling'])
-    args["high"] = high #add to dict for logging purposes
+    high = cl.max_random_sequence_length(args["num_qubits"], args["scaling"])
+    args["high"] = high  # add to dict for logging purposes
     eval_max_iter = args["eval_max_iter"]
     eval_num_trials = args["eval_num_trials"]
     sampling_method = args["sampling_method"]
 
     ## save directory
     n = args["num_qubits"]
-    scaling = args['scaling']
+    scaling = args["scaling"]
     if args["drop_phase_bits"]:
         data_dir = f"data/data_n_{n}_drop_phase_bits_scaling_{scaling}/"
     else:
         data_dir = f"data/data_n_{n}_keep_phase_bits_scaling_{scaling}/"
     eval_dir = data_dir + "eval/"
-    #timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    #data_dir = "data/" + timestamp
+    # timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    # data_dir = "data/" + timestamp
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
     if not os.path.exists(eval_dir):
@@ -198,11 +198,25 @@ if __name__ == "__main__":
 
     ## save evaluation results
     eval_max_iter = args["eval_max_iter"]
-    with open(eval_dir + f"steps_until_success_eval_max_iter_{eval_max_iter}_eval_num_trials_{eval_num_trials}_sampling_method_{sampling_method}.pkl", "wb") as f:
+    with open(
+        eval_dir
+        + f"steps_until_success_eval_max_iter_{eval_max_iter}_eval_num_trials_{eval_num_trials}_sampling_method_{sampling_method}.pkl",
+        "wb",
+    ) as f:
         pickle.dump(steps_until_success, f)
 
     ## print out some statistics
-    bitstring_qiskit = [bitstr for bitstr in steps_until_success["qiskit"]["bitstrings"] if bitstr != None]
-    bitstring_lgf = [bitstr for bitstr in steps_until_success["lgf"]["bitstrings"] if bitstr != None]
-    print(f"(Qiskit) unique tableaus encountered: {len(set(bitstring_qiskit))}, total tableaus encountered: {len(bitstring_qiskit)}")
-    print(f"(LGF) unique tableaus encountered: {len(set(bitstring_lgf))}, total tableaus encountered: {len(bitstring_lgf)}\n")
+    bitstring_qiskit = [
+        bitstr
+        for bitstr in steps_until_success["qiskit"]["bitstrings"]
+        if bitstr != None
+    ]
+    bitstring_lgf = [
+        bitstr for bitstr in steps_until_success["lgf"]["bitstrings"] if bitstr != None
+    ]
+    print(
+        f"(Qiskit) unique tableaus encountered: {len(set(bitstring_qiskit))}, total tableaus encountered: {len(bitstring_qiskit)}"
+    )
+    print(
+        f"(LGF) unique tableaus encountered: {len(set(bitstring_lgf))}, total tableaus encountered: {len(bitstring_lgf)}\n"
+    )

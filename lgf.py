@@ -17,6 +17,7 @@ class LGFModel(nn.Module):
     """
     Learned Guidance Function model.
     """
+
     def __init__(
         self,
         num_qubits,
@@ -316,7 +317,7 @@ def hillclimbing(
     result = {"success": False, "move_history": [], "L_history": [], "move_type": []}
 
     ## for now, do evaluation on CPU
-    lgf_model = lgf_model.to('cpu')
+    lgf_model = lgf_model.to("cpu")
 
     ## initialize
     problem = cl.Problem(
@@ -453,7 +454,7 @@ def compute_weighted_steps_until_success(
     max_iter: int = int(1e4),
     method: str = "lgf",
     high: Union[int, None] = None,
-    sampling_method='random_walk',
+    sampling_method="random_walk",
 ) -> Dict:
     """
     Apply the hillclimbing algorithm a number of times to find the
@@ -537,7 +538,7 @@ def compute_weighted_steps_until_success(
             CNOT_count.append(None)
 
     return {
-        "bitstrings":bitstrings,
+        "bitstrings": bitstrings,
         "weighted_steps": steps_until_success,
         "CNOTs": CNOT_count,
-        }
+    }

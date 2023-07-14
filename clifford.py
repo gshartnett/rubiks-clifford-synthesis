@@ -8,11 +8,10 @@ from qiskit import QuantumCircuit
 from qiskit.quantum_info import Clifford
 from qiskit.quantum_info import random_clifford as random_clifford_uniform
 
-
 GATES = ["h", "s", "sdg", "x", "y", "z", "cx", "swap"]
 
 
-def max_random_sequence_length(num_qubits : int, scaling : str) -> int:
+def max_random_sequence_length(num_qubits: int, scaling: str) -> int:
     """
     Generate the high parameter used to set the maximum length of the
     random sequence.
@@ -29,13 +28,13 @@ def max_random_sequence_length(num_qubits : int, scaling : str) -> int:
     int
         The high parameter.
     """
-    if not scaling in ['log', 'linear', 'log-linear']:
+    if not scaling in ["log", "linear", "log-linear"]:
         raise ValueError("scaling must be one of: log, linear, log-linear")
-    if scaling == 'log':
-        return int(20 * np.log(num_qubits)/np.log(2))
-    elif scaling == 'linear':
-        return int(20 * num_qubits/2)
-    return int(10 * num_qubits * np.log(num_qubits)/np.log(2))
+    if scaling == "log":
+        return int(20 * np.log(num_qubits) / np.log(2))
+    elif scaling == "linear":
+        return int(20 * num_qubits / 2)
+    return int(10 * num_qubits * np.log(num_qubits) / np.log(2))
 
 
 def normalize_dict(input_dict: Dict) -> Dict:
@@ -76,7 +75,7 @@ def bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
     np.ndarray
         A binary-valued numpy array.
     """
-    if not len(bitstr) == (2 * num_qubits) * (2*num_qubits + 1):
+    if not len(bitstr) == (2 * num_qubits) * (2 * num_qubits + 1):
         raise ValueError("The bitstring should have dimension 2n*(2n+1).")
     arr = np.asarray([int(s) for s in bitstr]).reshape(
         (2 * num_qubits, 2 * num_qubits + 1)
@@ -150,9 +149,7 @@ def size_movet_set(num_qubits: int) -> int:
     return num_single_qubit + num_CNOT + num_SWAP
 
 
-def random_sequence(
-    rng: Generator, seq_length: int, num_qubits: int
-) -> List:
+def random_sequence(rng: Generator, seq_length: int, num_qubits: int) -> List:
     """
     Generate a random gate sequence corresponding to num_qubits qubits.
     The length will either be seq_length or seq_length + 1, with the latter
@@ -287,9 +284,7 @@ def sequence_to_tableau(sequence: List, num_qubits: int) -> Clifford:
     return Clifford(circ)
 
 
-def random_clifford(
-    num_qubits: int, num_gates: int, rng: Generator
-) -> QuantumCircuit:
+def random_clifford(num_qubits: int, num_gates: int, rng: Generator) -> QuantumCircuit:
     """
     Generate a random Clifford circuit (not tableau) using the
     gate set (H, S, CNOT).
@@ -410,7 +405,13 @@ class Problem:
     """
 
     def __init__(
-        self, num_qubits, initial_state=None, seed=123, high=None, drop_phase_bits=False, sampling_method='random_walk'
+        self,
+        num_qubits,
+        initial_state=None,
+        seed=123,
+        high=None,
+        drop_phase_bits=False,
+        sampling_method="random_walk",
     ):
         self.num_qubits = num_qubits
         self.drop_phase_bits = drop_phase_bits
@@ -420,14 +421,14 @@ class Problem:
         self.move_set_array = self.get_move_set_as_array()
         if initial_state is not None:
             self.state = initial_state
-        elif sampling_method == 'random_walk':
+        elif sampling_method == "random_walk":
             if high is None:
                 high = int(20 * np.log(num_qubits) / np.log(2))
             seq_len = self.rng.integers(low=1, high=high)
             self.state = sequence_to_tableau(
                 random_sequence(self.rng, seq_len, num_qubits), num_qubits
             )
-        elif sampling_method == 'uniform':
+        elif sampling_method == "uniform":
             self.state = random_clifford_uniform(num_qubits=num_qubits, seed=seed)
         else:
             raise NotImplementedError("sampling method not recognized")
@@ -599,4 +600,4 @@ class Problem:
         str
             The bitstring.
         """
-        return ''.join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+        return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
