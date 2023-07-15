@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "rubiks-clifford-synthesis"
+version = "0.1.0"
+description = "Learned guidance approach to Clifford synthesis"
+authors = ["Gavin Hartnett <gshartnett@gmail.com>"]
+readme = "README.md"
+packages = [{include = "rubiks"}]
+
+
+[tool.poetry.dependencies]
+python = ">=3.9, <3.13"
+joblib = "^1.2.0"
+matplotlib = "^3.7.1"
+networkx = "^3.1"
+numpy = "^1.23.5"
+pandas = "^2.0.1"
+qiskit = "^0.41.0"
+qiskit_ibmq_provider = "^0.20.0"
+qiskit_terra = "^0.23.1"
+scipy = "^1.10.1"
+seaborn = "^0.12.2"
+setuptools = "^66.0.0"
+torch = "^2.0.0"
+tqdm = "^4.65.0"
+tensorboard = "^2.13.0"
+
+
+[tool.black]
+exclude = '''
+(
+     /(
+         docs
+     )/
+)
+'''
+
+[tool.isort]
+profile = "black"
+force_grid_wrap = "2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
