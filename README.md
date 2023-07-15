@@ -12,7 +12,14 @@ The key contents of this repository are:
 - `Cl(2) Graph Notebook.ipynb` contains code used to exhaustively build the problem graph for the case of the $n=2$ Clifford group
 
 ## Installation
-`pip install -r requirements.txt`. It is recommended to perform the Python installation within a virtual environment.
+This repo can be installed using [Poetry](https://python-poetry.org/):
+```
+git clone git@github.com:gshartnett/rubiks-clifford-synthesis.git
+cd rubiks-clifford-synthesis
+poetry install
+```
+
+It is recommended to perform the Python installation within a virtual environment. If your machine has a GPU, then you will have to manually install the appropriate [PyTorch](https://pytorch.org/get-started/locally/) version.
 
 ## License
 This code is provided under the MIT license. See `LICENSE` for more information.
