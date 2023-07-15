@@ -4,10 +4,6 @@ import numpy as np
 from qiskit.quantum_info import Clifford
 from qiskit.synthesis import synth_clifford_full
 
-#sys.path.append('../')
-#import rubiks-clifford-synthesis.clifford as cl
-#import clifford as cl
-#from ... import clifford as cl
 import rubiks.clifford as cl
 
 
