@@ -1,5 +1,5 @@
 # A Rubik's Cube Inspired Approach to Clifford Synthesis
-This is the code repository for the paper "A Rubik's Cube Inspired Approach to Clifford Synthesis".
+This is the code repository for the paper "[A Rubik's Cube Inspired Approach to Clifford Synthesis](https://arxiv.org/abs/2307.08684)".
 
 The problem of Clifford synthesis is: given an arbitrary element of the Clifford group Cl($n$), find a sequence of gates drawn from some universal gate set that implements the given Clifford element. Inspired by recent machine learning approaches for solving the Rubik's Cube, this repository contains research code used to develop a learned guidance function approach to Clifford synthesis.
 
