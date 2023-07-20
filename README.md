@@ -1,5 +1,5 @@
-# A Rubik's Cube Inspired Approach to Clifford Synthesis
-This is the code repository for the paper "[A Rubik's Cube Inspired Approach to Clifford Synthesis](https://arxiv.org/abs/2307.08684)".
+# A Rubik's Cube inspired approach to Clifford synthesis
+This is the code repository for the paper "[A Rubik's Cube inspired approach to Clifford synthesis](https://arxiv.org/abs/2307.08684)".
 
 The problem of Clifford synthesis is: given an arbitrary element of the Clifford group Cl($n$), find a sequence of gates drawn from some universal gate set that implements the given Clifford element. Inspired by recent machine learning approaches for solving the Rubik's Cube, this repository contains research code used to develop a learned guidance function approach to Clifford synthesis.
 
@@ -25,4 +25,13 @@ It is recommended to perform the Python installation within a virtual environmen
 This code is provided under the MIT license. See `LICENSE` for more information.
 
 ## Citation
-Add a bibtex reference
+If you'd like to cite our work, please use this bibtex citation:
+
+```
+@article{bao2023rubik,
+  title={A Rubik's Cube inspired approach to Clifford synthesis},
+  author={Bao, Ning and Hartnett, Gavin S},
+  journal={arXiv preprint arXiv:2307.08684},
+  year={2023}
+}
+```
