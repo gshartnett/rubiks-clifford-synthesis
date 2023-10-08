@@ -119,3 +119,13 @@ def test_move_set(num_trials=50, num_qubits_min=2, num_qubits_max=9):
                 assert circ_gates.issubset(gate_set)
             except:
                 raise NotImplementedError("Gate sets do not match!")
+
+
+def test_to_and_from_bitstring():
+    """
+    Check that a problem instance initialized from a bitstring agrees with the problem instance whose
+    state corresponds to that same bitstring.
+    """
+    problem1 = cl.Problem(num_qubits=5)
+    problem2 = cl.Problem(num_qubits=5, initial_state=problem1.to_bitstring())
+    assert problem1.to_bitstring() == problem2.to_bitstring()

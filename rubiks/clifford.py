@@ -58,7 +58,7 @@ def normalize_dict(input_dict: Dict) -> Dict:
     return new_dict
 
 
-def bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
+def TODELETE_bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
     """
     Convert a bit string into a tableau, represented as a binary numpy
     array.
@@ -83,9 +83,10 @@ def bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
     return arr
 
 
-def array_to_bitstr(arr: np.ndarray) -> str:
+def TODELETE_array_to_bitstr(arr: np.ndarray) -> str:
     """
     Convert a binary numpy array into a bitstring.
+    The array should be 1D.
 
     Parameters
     ----------
@@ -420,6 +421,8 @@ class Problem:
         self.move_set_tableau = self.get_move_set_as_tableaus()
         self.move_set_array = self.get_move_set_as_array()
         if initial_state is not None:
+            if type(initial_state) is str:
+                initial_state = Clifford(self.initial_state_from_bitstring(initial_state))
             self.state = initial_state
         elif sampling_method == "random_walk":
             if high is None:
@@ -432,6 +435,9 @@ class Problem:
             self.state = random_clifford_uniform(num_qubits=num_qubits, seed=seed)
         else:
             raise NotImplementedError("sampling method not recognized")
+
+    def initial_state_from_bitstring(self, initial_state):
+        return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
 
     def get_move_set(self) -> List:
         """
@@ -601,3 +607,41 @@ class Problem:
             The bitstring.
         """
         return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+    
+    def generate_neighbors(self) -> np.ndarray:
+        """
+        Generate the neighbors of the current state.
+        Neighbors are formatted as numpy arrays.
+
+        Returns
+        -------
+        np.ndarray
+            An array of shape (M, 2*N, 2*N+1) or (M, 2*N, 2*N) containing the M neighbors 
+            of the current state (the difference is whether the phase bits are dropped or not)
+
+        """
+        if self.drop_phase_bits:
+            neighbors = (
+                np.einsum(
+                    "ij, mjk -> mik",
+                    1 * self.state.tableau[:, :-1],
+                    self.move_set_array,
+                )
+                % 2
+            )
+        else:
+            """
+            This is quite slow. I did some profiling experiments and confirmed that the bottleneck is
+            the first line where the tableau composition is performed, and not the casting to a numpy
+            array.
+
+            To improve this, we would need to implement a vectorized version of the `_compose_general`
+            classmethod defined here:
+            https://qiskit.org/documentation/_modules/qiskit/quantum_info/operators/symplectic/clifford.html#Clifford.compose
+            """
+            neighbors = [
+                self.state & tableau for tableau in self.move_set_tableau.values()
+            ]
+            neighbors = np.asarray([neighbor.tableau for neighbor in neighbors])
+
+        return neighbors

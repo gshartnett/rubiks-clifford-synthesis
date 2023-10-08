@@ -5,8 +5,8 @@ import pickle
 import numpy as np
 import torch
 
-import clifford as cl
-import lgf
+import rubiks.clifford as cl
+import rubiks.lgf as lgf
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

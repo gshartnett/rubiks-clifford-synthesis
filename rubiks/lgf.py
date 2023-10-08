@@ -10,7 +10,7 @@ from qiskit.synthesis import synth_clifford_full
 from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
 
-import clifford as cl
+import rubiks.clifford as cl
 
 
 class LGFModel(nn.Module):
@@ -342,31 +342,9 @@ def hillclimbing(
 
     ## loop over iterations
     for _ in range(max_iter):
-        ## build array of candidates
-        if lgf_model.drop_phase_bits:
-            candidates = (
-                np.einsum(
-                    "ij, mjk -> mik",
-                    1 * problem.state.tableau[:, :-1],
-                    problem.move_set_array,
-                )
-                % 2
-            )
-        else:
-            """
-            This is quite slow. I did some profiling experiments and confirmed that the bottleneck is
-            the first line where the tableau composition is performed, and not the casting to a numpy
-            array.
 
-            To improve this, we would need to implement a vectorized version of the `_compose_general`
-            classmethod defined here:
-            https://qiskit.org/documentation/_modules/qiskit/quantum_info/operators/symplectic/clifford.html#Clifford.compose
-            """
-            candidates = [
-                problem.state & tableau for tableau in problem.move_set_tableau.values()
-            ]
-            # candidates = [tableau & problem.state for tableau in problem.move_set_tableau.values()]
-            candidates = np.asarray([candidate.tableau for candidate in candidates])
+        ## build array of candidates
+        candidates = problem.generate_neighbors()
 
         ## check to see if any of the candidates are the solution
         for i_move in range(num_moves):
