@@ -11,6 +11,37 @@ from qiskit.quantum_info import random_clifford as random_clifford_uniform
 GATES = ["h", "s", "sdg", "x", "y", "z", "cx", "swap"]
 
 
+class Node:
+     # Node class for linked list
+	def __init__(self, data):
+		self.data = data
+		self.next = None
+
+
+class LinkedList:
+    def __init__(self):
+        self.head = None
+ 
+    def insertAtBegin(self, data):
+        # add a node at begin of linked list
+        new_node = Node(data)
+        if self.head is None:
+            self.head = new_node
+            return
+        else:
+            new_node.next = self.head
+            self.head = new_node
+	
+    def get_move_list(self):
+        # make a pass through the list and retrieve the moves
+        move_list = []
+        current_node = self.head
+        while(current_node):
+            move_list.append(current_node.data['move'])
+            current_node = current_node.next
+        return move_list
+    
+    
 def max_random_sequence_length(num_qubits: int, scaling: str) -> int:
     """
     Generate the high parameter used to set the maximum length of the

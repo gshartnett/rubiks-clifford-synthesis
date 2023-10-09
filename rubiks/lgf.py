@@ -1,5 +1,11 @@
+import copy
 from datetime import datetime
-from typing import Dict, List, Tuple, Union
+from typing import (
+    Dict,
+    List,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import torch
@@ -7,7 +13,10 @@ import tqdm
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Clifford
 from qiskit.synthesis import synth_clifford_full
-from torch import nn, optim
+from torch import (
+    nn,
+    optim,
+)
 from torch.utils.tensorboard import SummaryWriter
 
 import rubiks.clifford as cl
@@ -118,10 +127,7 @@ class LGFModel(nn.Module):
         date = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         writer = SummaryWriter(f"runs/date_{date}_num_qubits_{self.num_qubits}")
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=100,
-        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100,)
         loss_current = np.inf
 
         ## loop over "epochs"
@@ -186,8 +192,8 @@ def pearson_correlation(input_sequence_1: torch.Tensor, input_sequence_2: torch.
     delta_2 = input_sequence_2 - torch.mean(input_sequence_2, axis=0, keepdim=True)
     corr = torch.sum(delta_1 * delta_2, dim=0, keepdim=True)
     corr = corr / (
-        torch.sqrt(torch.sum(delta_1**2 + pearson_eps, dim=0, keepdim=True))
-        * torch.sqrt(torch.sum(delta_2**2 + pearson_eps, dim=0, keepdim=True))
+        torch.sqrt(torch.sum(delta_1 ** 2 + pearson_eps, dim=0, keepdim=True))
+        * torch.sqrt(torch.sum(delta_2 ** 2 + pearson_eps, dim=0, keepdim=True))
     )
     corr = torch.mean(corr)
     return corr
@@ -236,9 +242,7 @@ def conv2d_output_dimensions(
 
 
 def hillclimbing_random(
-    initial_state: Clifford,
-    max_iter: int = 1000,
-    seed: int = 123,
+    initial_state: Clifford, max_iter: int = 1000, seed: int = 123,
 ) -> Dict:
     """
     A simple random walk algorithm for solving the synthesis problem.
@@ -425,14 +429,135 @@ def hillclimbing(
     return result
 
 
+def beam_search(
+    initial_state: Clifford,
+    lgf_model: nn.Module,
+    beam_width: int = 1,
+    max_iter: int = 100,
+    drop_phase_bits=True,
+) -> Dict:
+    """
+    Beam search function using the learned guidance function output as the heuristic.
+    If the search succeeds, then it will produce a linked list whose node sequence implements the inverse of the initial Clifford.
+    In particular, 
+        initial_state @ cl.sequence_to_tableau(results_dict['linked_list'].get_move_list()[:-1][::-1], num_qubits=num_qubits)
+    will be the identity. The [:-1] removes the initial move (None), and the [::-1] reverses the sequence since the linked list
+    is ordered from most recently visited node to the starting node (i.e., in reverse order).
+
+    For beam_width=1 reduces to the Greedy "hillclimbing" algorithm.
+
+    Parameters
+    ----------
+    initial_state : Clifford
+        The initial state.
+    lgf_model : nn.Module
+        A learned guidance function model.
+    beam_width : int, optional
+        The beam width, by default 1.
+    max_iter : int, optional
+        The maximum number of steps to consider, by default 100.
+    drop_phase_bits : bool, optional
+        Whether the phase bits should be dropped, by default True.
+
+    Returns
+    -------
+    Dict
+        A results dictionary.
+    """
+
+    # initialize the starting node
+    problem = cl.Problem(lgf_model.num_qubits, initial_state=initial_state,)
+    linked_list = cl.LinkedList()
+    linked_list.insertAtBegin(data={"state": problem.to_bitstring(), "move": None})
+
+    num_moves = len(problem.move_set)
+    identity_array = 1 * cl.sequence_to_tableau([], problem.num_qubits).tableau
+
+    # perform the search
+    beam = [linked_list]
+    visited_nodes = {problem.to_bitstring()}
+    count = 0
+    while (len(beam) > 0) and (count < max_iter):
+
+        # loop over nodes in current beam (maximum of beam_width items)
+        next_beam = []
+        next_beam_lgf_values = []
+        for ll in beam:
+
+            # grab the neighbors
+            node = ll.head
+            node_state = node.data["state"]
+            node_problem = cl.Problem(
+                num_qubits=lgf_model.num_qubits, initial_state=node_state
+            )
+            neighbors = node_problem.generate_neighbors()  # (M, 2N, 2N+1) array
+
+            # compute neighbors and check for solution
+            for i_move in range(num_moves):
+                neighbor_problem = cl.Problem(
+                    num_qubits=lgf_model.num_qubits,
+                    initial_state=Clifford(neighbors[i_move]),
+                )
+                neighbor_state = neighbor_problem.to_bitstring()
+                move = problem.move_set[i_move]
+                ll_new = copy.deepcopy(ll)
+                ll_new.insertAtBegin(data={"state": neighbor_state, "move": move})
+                next_beam.append(ll_new)
+
+                # check for solution
+                if np.array_equal(neighbors[i_move], identity_array):
+                    return {
+                        "success": True,
+                        "count": count,
+                        "linked_list": ll_new,
+                        "move_history": ll_new.get_move_list()[:-1][::-1]
+                    }
+
+            # compute LGF values for neighbors
+            neighbors_torch = torch.tensor(neighbors, dtype=torch.float32)
+            if drop_phase_bits:
+                neighbors_torch = neighbors_torch[
+                    :, :, :-1
+                ]  # drop phase bits if necessary
+            neighbors_torch = torch.flatten(neighbors_torch, start_dim=1)
+            with torch.no_grad():
+                lgf_of_neighbors = lgf_model.forward(neighbors_torch).numpy()
+            next_beam_lgf_values.extend(list(lgf_of_neighbors))
+
+        # discard previously visited nodes and update beam
+        next_beam_lgf_values = [
+            lgf_val
+            for i, lgf_val in enumerate(next_beam_lgf_values)
+            if next_beam[i].head.data["state"] not in visited_nodes
+        ]
+        next_beam = [
+            ll for ll in next_beam if ll.head.data["state"] not in visited_nodes
+        ]
+        beam = [next_beam[i] for i in np.argsort(next_beam_lgf_values)][:beam_width]
+
+        # update visited nodes
+        for ll in next_beam:
+            visited_nodes.add(ll.head.data["state"])
+        count += 1
+        # print(type(beam))
+
+    return {
+        "success": False,
+        "count": count,
+        "linked_list": None,
+        "move_history": None,
+    }
+
+
 def compute_weighted_steps_until_success(
     lgf_model: nn.Module,
     weight_dict: Dict,
     num_trials: int = 100,
     max_iter: int = int(1e4),
-    method: str = "lgf",
+    method: str = "hillclimbing",
     high: Union[int, None] = None,
     sampling_method="random_walk",
+    beam_width: int = 5,
 ) -> Dict:
     """
     Apply the hillclimbing algorithm a number of times to find the
@@ -449,7 +574,7 @@ def compute_weighted_steps_until_success(
     max_iter : int, optional
         Maximum number of iterations, by default 10,000.
     method : str, optional
-        Method to use, by default 'lgf'.
+        Method to use, by default 'hillclimbing'.
 
     Returns
     -------
@@ -477,19 +602,18 @@ def compute_weighted_steps_until_success(
         )
 
         ## apply the synthesis method
-        if method == "lgf":
-            result = hillclimbing(
-                problem.state,
-                lgf_model,
+        if method == "hillclimbing":
+            # I don't think the seed is being used here
+            result = hillclimbing(problem.state, lgf_model, max_iter=max_iter, seed=k,)
+        elif method == "beamsearch":
+            result = beam_search(
+                initial_state=problem.state,
+                lgf_model=lgf_model,
+                beam_width=beam_width,
                 max_iter=max_iter,
-                seed=k,
             )
         elif method == "random":
-            result = hillclimbing_random(
-                problem.state,
-                max_iter=max_iter,
-                seed=k,
-            )
+            result = hillclimbing_random(problem.state, max_iter=max_iter, seed=k,)
         elif method == "qiskit":
             ## hacky way to put the Qiskit results in the same data structure as the above
             result = {
