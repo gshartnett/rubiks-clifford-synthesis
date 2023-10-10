@@ -31,7 +31,17 @@ class LinkedList:
         else:
             new_node.next = self.head
             self.head = new_node
-	
+
+    def inserAtEnd(self, data):
+        new_node = Node(data)
+        if self.head is None:
+            self.head = new_node
+            return
+        current_node = self.head
+        while(current_node.next):
+            current_node = current_node.next    
+        current_node.next = new_node
+        
     def get_move_list(self):
         # make a pass through the list and retrieve the moves
         move_list = []
@@ -41,7 +51,15 @@ class LinkedList:
             current_node = current_node.next
         return move_list
     
-    
+    def copy(self):
+        new_list = LinkedList()
+        buffer = self.head
+        while buffer.next != None:
+            new_list.inserAtEnd(buffer.data)
+            buffer= buffer.next
+        new_list.inserAtEnd(buffer.data)
+        return new_list
+
 def max_random_sequence_length(num_qubits: int, scaling: str) -> int:
     """
     Generate the high parameter used to set the maximum length of the
@@ -453,7 +471,13 @@ class Problem:
         self.move_set_array = self.get_move_set_as_array()
         if initial_state is not None:
             if type(initial_state) is str:
-                initial_state = Clifford(self.initial_state_from_bitstring(initial_state))
+                initial_state_array = self.initial_state_from_bitstring(initial_state)
+                if self.drop_phase_bits:
+                    initial_state = Clifford(
+                        np.hstack((initial_state_array, np.zeros(2*self.num_qubits)[:, None]))
+                    )
+                else:
+                    initial_state = Clifford(initial_state_array)
             self.state = initial_state
         elif sampling_method == "random_walk":
             if high is None:
@@ -468,7 +492,10 @@ class Problem:
             raise NotImplementedError("sampling method not recognized")
 
     def initial_state_from_bitstring(self, initial_state):
-        return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+        if not self.drop_phase_bits:
+            return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+        else:
+            return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits))
 
     def get_move_set(self) -> List:
         """
@@ -596,9 +623,7 @@ class Problem:
             ):
                 return True
         else:
-            if np.array_equal(
-                1 * self.state.tableau, sequence_to_tableau([], self.num_qubits)
-            ):
+            if self.state == sequence_to_tableau([], self.num_qubits):
                 return True
         return False
 
@@ -627,7 +652,7 @@ class Problem:
                 return move
         return None
 
-    def to_bitstring(self) -> str:
+    def to_bitstring(self, drop_phase_bits=None) -> str:
         """
         Flatten the tableau into a bitstring.
         Used to check whether a given tableau has been seen before.
@@ -637,7 +662,14 @@ class Problem:
         str
             The bitstring.
         """
-        return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+        if drop_phase_bits is None:
+            drop_phase_bits = self.drop_phase_bits
+
+        if not drop_phase_bits:
+            return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+        else:
+            return "".join(list(str(x) for x in 1 * self.state.tableau[:,:-1].flatten()))
+
     
     def generate_neighbors(self) -> np.ndarray:
         """

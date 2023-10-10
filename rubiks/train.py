@@ -102,7 +102,7 @@ if __name__ == "__main__":
         data_dir = f"data/data_n_{n}_drop_phase_bits_scaling_{scaling}/"
     else:
         data_dir = f"data/data_n_{n}_keep_phase_bits_scaling_{scaling}/"
-    eval_dir = data_dir + "eval/"
+    eval_dir = data_dir + "eval_beamsearch/"
     # timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     # data_dir = "data/" + timestamp
     if not os.path.exists(data_dir):
@@ -180,12 +180,25 @@ if __name__ == "__main__":
         weight_dict=WEIGHT_DICT,
         num_trials=args["eval_num_trials"],
         max_iter=args["eval_max_iter"],
-        method="lgf",
+        method="hillclimbing",
+        high=high,
+        sampling_method=sampling_method,
+    )
+
+    ## lgf beam search
+    print("evaluating beamsearch using LGF")
+    steps_until_success["beamsearch"] = lgf.compute_weighted_steps_until_success(
+        lgf_model=lgf_model,
+        weight_dict=WEIGHT_DICT,
+        num_trials=args["eval_num_trials"],
+        max_iter=args["eval_max_iter"],
+        method="beamsearch",
         high=high,
         sampling_method=sampling_method,
     )
 
     ## qiskit method
+    print("evaluating qiskit")
     steps_until_success["qiskit"] = lgf.compute_weighted_steps_until_success(
         lgf_model=lgf_model,
         weight_dict=WEIGHT_DICT,

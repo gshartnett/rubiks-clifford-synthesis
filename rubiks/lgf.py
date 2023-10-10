@@ -466,12 +466,22 @@ def beam_search(
     """
 
     # initialize the starting node
-    problem = cl.Problem(lgf_model.num_qubits, initial_state=initial_state,)
+    problem = cl.Problem(
+        lgf_model.num_qubits, 
+        initial_state=initial_state, 
+        drop_phase_bits=drop_phase_bits
+        )
+
+    # check for solution
+    if problem.is_solution():
+        return {
+            "success": True,
+            "count": 0,
+            "move_history": []
+            }
+
     linked_list = cl.LinkedList()
     linked_list.insertAtBegin(data={"state": problem.to_bitstring(), "move": None})
-
-    num_moves = len(problem.move_set)
-    identity_array = 1 * cl.sequence_to_tableau([], problem.num_qubits).tableau
 
     # perform the search
     beam = [linked_list]
@@ -488,24 +498,27 @@ def beam_search(
             node = ll.head
             node_state = node.data["state"]
             node_problem = cl.Problem(
-                num_qubits=lgf_model.num_qubits, initial_state=node_state
+                num_qubits=lgf_model.num_qubits, 
+                initial_state=node_state, 
+                drop_phase_bits=drop_phase_bits,
             )
-            neighbors = node_problem.generate_neighbors()  # (M, 2N, 2N+1) array
+            neighbors = node_problem.generate_neighbors()  # (M, 2N, 2N) array
 
             # compute neighbors and check for solution
-            for i_move in range(num_moves):
+            for i_move in range(len(problem.move_set)):
                 neighbor_problem = cl.Problem(
                     num_qubits=lgf_model.num_qubits,
                     initial_state=Clifford(neighbors[i_move]),
+                    drop_phase_bits=drop_phase_bits,
                 )
                 neighbor_state = neighbor_problem.to_bitstring()
                 move = problem.move_set[i_move]
-                ll_new = copy.deepcopy(ll)
+                ll_new = ll.copy()
                 ll_new.insertAtBegin(data={"state": neighbor_state, "move": move})
                 next_beam.append(ll_new)
 
                 # check for solution
-                if np.array_equal(neighbors[i_move], identity_array):
+                if neighbor_problem.is_solution():
                     return {
                         "success": True,
                         "count": count,
@@ -515,10 +528,6 @@ def beam_search(
 
             # compute LGF values for neighbors
             neighbors_torch = torch.tensor(neighbors, dtype=torch.float32)
-            if drop_phase_bits:
-                neighbors_torch = neighbors_torch[
-                    :, :, :-1
-                ]  # drop phase bits if necessary
             neighbors_torch = torch.flatten(neighbors_torch, start_dim=1)
             with torch.no_grad():
                 lgf_of_neighbors = lgf_model.forward(neighbors_torch).numpy()
@@ -539,7 +548,6 @@ def beam_search(
         for ll in next_beam:
             visited_nodes.add(ll.head.data["state"])
         count += 1
-        # print(type(beam))
 
     return {
         "success": False,
