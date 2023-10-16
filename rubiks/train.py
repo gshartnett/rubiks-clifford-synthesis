@@ -28,6 +28,13 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--beam_width",
+        default=5,
+        type=int,
+        help="Beam width for beam search",
+    )
+
+    parser.add_argument(
         "--eval_max_iter",
         default=1000,
         type=int,
@@ -94,6 +101,7 @@ if __name__ == "__main__":
     eval_max_iter = args["eval_max_iter"]
     eval_num_trials = args["eval_num_trials"]
     sampling_method = args["sampling_method"]
+    beam_width = args["beam_width"]
 
     ## save directory
     n = args["num_qubits"]
@@ -187,7 +195,7 @@ if __name__ == "__main__":
 
     ## lgf beam search
     print("evaluating beamsearch using LGF")
-    steps_until_success["beamsearch"] = lgf.compute_weighted_steps_until_success(
+    steps_until_success[f"beam-{beam_width}"] = lgf.compute_weighted_steps_until_success(
         lgf_model=lgf_model,
         weight_dict=WEIGHT_DICT,
         num_trials=args["eval_num_trials"],
@@ -195,6 +203,7 @@ if __name__ == "__main__":
         method="beamsearch",
         high=high,
         sampling_method=sampling_method,
+        beam_width=beam_width,
     )
 
     ## qiskit method

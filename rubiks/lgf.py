@@ -18,7 +18,8 @@ from torch import (
     optim,
 )
 from torch.utils.tensorboard import SummaryWriter
-
+import time
+import hashlib
 import rubiks.clifford as cl
 
 
@@ -429,7 +430,7 @@ def hillclimbing(
     return result
 
 
-def beam_search(
+def beam_search_old(
     initial_state: Clifford,
     lgf_model: nn.Module,
     beam_width: int = 1,
@@ -548,6 +549,214 @@ def beam_search(
         for ll in next_beam:
             visited_nodes.add(ll.head.data["state"])
         count += 1
+
+    return {
+        "success": False,
+        "count": count,
+        "linked_list": None,
+        "move_history": None,
+    }
+
+
+def beam_search(
+    initial_state: Clifford,
+    lgf_model: nn.Module,
+    beam_width: int = 1,
+    max_iter: int = 100,
+    drop_phase_bits=True,
+    check = False,
+) -> Dict:
+    """
+    1. batch the computation of the LGF
+    2. only compute LL for retained guys
+
+    Beam search function using the learned guidance function output as the heuristic.
+    If the search succeeds, then it will produce a linked list whose node sequence implements the inverse of the initial Clifford.
+    In particular, 
+        initial_state @ cl.sequence_to_tableau(results_dict['linked_list'].get_move_list()[:-1][::-1], num_qubits=num_qubits)
+    will be the identity. The [:-1] removes the initial move (None), and the [::-1] reverses the sequence since the linked list
+    is ordered from most recently visited node to the starting node (i.e., in reverse order).
+
+    For beam_width=1 reduces to the Greedy "hillclimbing" algorithm.
+
+    Parameters
+    ----------
+    initial_state : Clifford
+        The initial state.
+    lgf_model : nn.Module
+        A learned guidance function model.
+    beam_width : int, optional
+        The beam width, by default 1.
+    max_iter : int, optional
+        The maximum number of steps to consider, by default 100.
+    drop_phase_bits : bool, optional
+        Whether the phase bits should be dropped, by default True.
+
+    Returns
+    -------
+    Dict
+        A results dictionary.
+    """
+    # initialize the starting node
+    problem = cl.Problem(
+        lgf_model.num_qubits, 
+        initial_state=initial_state, 
+        drop_phase_bits=drop_phase_bits
+        )
+    num_qubits = problem.num_qubits
+    num_moves = len(problem.move_set)
+    
+    # check for solution
+    if problem.is_solution():
+        return {
+            "success": True,
+            "count": 0,
+            "linked_list": None,
+            "move_history": []
+            }
+
+    # initialize the linked list
+    linked_list = cl.LinkedList()
+    linked_list.insertAtBegin(data={"state": problem.to_bitstring(drop_phase_bits=drop_phase_bits), "move": None})
+
+    # identity tensor
+    identity_tensor = 1 * cl.sequence_to_tableau([], num_qubits).tableau
+    if drop_phase_bits:
+        identity_tensor = identity_tensor[:, :-1]
+
+    # perform the search
+    beam = [linked_list]
+    visited_nodes = {problem.to_bitstring()}
+    count = 1
+    while (len(beam) > 0) and (count < max_iter):
+
+        # loop over nodes in current beam (maximum of beam_width items)
+        # build a list of M neighbors for each beam node
+        time_point = time.time()
+        neighbor_tensors = None
+        for ll in beam:
+
+            # grab the neighbors
+            node = ll.head
+            node_state = node.data["state"]
+            node_problem = cl.Problem(
+                num_qubits=num_qubits, 
+                initial_state=node_state, 
+                drop_phase_bits=drop_phase_bits,
+            )
+
+            # stack the neighbor tableaus into one big array
+            if neighbor_tensors is None:
+                neighbor_tensors = node_problem.generate_neighbors()  # (M, 2N, 2N) array
+            else:
+                neighbor_tensors = np.concatenate((neighbor_tensors, node_problem.generate_neighbors())) # (num_moves * M, 2N, 2N) array
+        #print(f"Time taken to build neighbor list of beams: {time.time() - time_point}")
+        #time_point = time.time()
+
+        # list of the parent linked_list indices and move index for each neighbor
+        parent_list = [(i // num_moves, i % num_moves) for i in range(neighbor_tensors.shape[0])] 
+
+        # check for solution
+        for i_neighbor, (idx_beam, idx_move) in enumerate(parent_list):
+
+            #assert i_neighbor == idx_beam * num_moves + idx_move
+            
+            neighbor_tensor = neighbor_tensors[i_neighbor]
+
+            if np.array_equal(neighbor_tensor, identity_tensor):
+
+                # pad state with a trivial set of phase bits
+                if drop_phase_bits:
+                    neighbor_tensor = np.hstack((neighbor_tensor, np.zeros(2*num_qubits)[:, None]))
+
+                neighbor_problem = cl.Problem(
+                    num_qubits=lgf_model.num_qubits,
+                    initial_state=Clifford(neighbor_tensor),
+                    drop_phase_bits=drop_phase_bits,
+                )
+                neighbor_state = neighbor_problem.to_bitstring(drop_phase_bits=drop_phase_bits)
+                move = problem.move_set[idx_move]
+                ll_new = beam[idx_beam].copy()
+                ll_new.insertAtBegin(data={"state": neighbor_state, "move": move})
+                move_history = ll_new.get_move_list()[:-1][::-1]
+
+                if check:
+                    state = initial_state @ cl.sequence_to_tableau(move_history, num_qubits=num_qubits)
+                    if not drop_phase_bits:
+                        if not np.array_equal(state.tableau, cl.sequence_to_tableau([], num_qubits=num_qubits).tableau):
+                            raise ValueError("Error, solution identity is not respected, likely problem with beam_search function.")
+                    else:
+                        if not np.array_equal(state.tableau[:,:-1], cl.sequence_to_tableau([], num_qubits=num_qubits).tableau[:,:-1]):
+                            raise ValueError("Error, solution identity is not respected, likely problem with beam_search function.")
+
+                return {
+                    "success": True,
+                    "count": count + 1,
+                    "linked_list": ll_new,
+                    "move_history": move_history
+                }
+        #print(f"Time taken to check for solution: {time.time() - time_point}")
+        time_point = time.time()
+
+        # compute LGF values for neighbors
+        neighbor_tensors = torch.tensor(neighbor_tensors, dtype=torch.float32)
+        with torch.no_grad():
+            lgf_of_neighbors = lgf_model.forward(torch.flatten(neighbor_tensors, start_dim=1))
+        #print(f"Time taken to compute LGF values: {time.time() - time_point}")
+        time_point = time.time()
+
+        # update beam
+        new_beam = []
+        lgf_of_neighbors_indices_sorted = torch.argsort(lgf_of_neighbors)
+        neighbor_count = 0
+        #print(f"Number of neighbors to sort through: {len(lgf_of_neighbors_indices_sorted)}")
+        while (len(new_beam) < beam_width) and (neighbor_count < len(lgf_of_neighbors_indices_sorted)):
+            i_neighbor = lgf_of_neighbors_indices_sorted[neighbor_count]
+            idx_beam, idx_move = parent_list[i_neighbor]
+            neighbor_tensor = neighbor_tensors[i_neighbor].numpy()
+            #if drop_phase_bits:
+            #    neighbor_tensor = np.hstack((neighbor_tensor, np.zeros(2*num_qubits)[:, None]))
+            #neighbor_problem = cl.Problem(
+            #    num_qubits=lgf_model.num_qubits,
+            #    initial_state=Clifford(neighbor_tensor),
+            #    drop_phase_bits=drop_phase_bits,
+            #)
+            #neighbor_bitstring = neighbor_problem.to_bitstring(drop_phase_bits=drop_phase_bits)
+            #print(len(neighbor_bitstring))
+            #print(neighbor_bitstring)
+            neighbor_bitstring = "".join(list(str(int(x)) for x in 1 * neighbor_tensor.flatten()))            
+            #print(len(neighbor_bitstring))
+            #print(neighbor_bitstring)
+            #assert 1==0
+
+            if neighbor_bitstring not in visited_nodes:
+            #if True:
+                #print(f"neighbor_count={neighbor_count}")
+                ll_new = beam[idx_beam].copy()
+                
+                #x = ll_new.head.data['state']
+                #old_beam_state = hashlib.sha1(x.encode("utf-8")).hexdigest()
+
+                move = problem.move_set[idx_move]
+                ll_new.insertAtBegin(data={"state": neighbor_bitstring, "move": move})
+                new_beam.append(ll_new)
+
+                #if neighbor_bitstring in visited_nodes:
+                    #x = ll_new.head.data['state']
+                    #new_beam_state = hashlib.sha1(x.encode("utf-8")).hexdigest()
+                    #print('\n I"VE BEEN HERE BEFORE!"')
+                    #print('move =', move)
+                    #print('old beam state = ', old_beam_state)
+                    #print('new beam state = ', new_beam_state)
+
+                visited_nodes.add(neighbor_bitstring)
+
+            neighbor_count += 1
+
+        beam = new_beam
+        count += 1
+        #print(f"Time taken to update beam: {time.time() - time_point}")
+        time_point = time.time()
 
     return {
         "success": False,

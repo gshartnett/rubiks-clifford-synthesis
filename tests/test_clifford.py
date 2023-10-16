@@ -126,6 +126,12 @@ def test_to_and_from_bitstring():
     Check that a problem instance initialized from a bitstring agrees with the problem instance whose
     state corresponds to that same bitstring.
     """
-    problem1 = cl.Problem(num_qubits=5)
+    # keeping the phase bits
+    problem1 = cl.Problem(num_qubits=5, drop_phase_bits=False)
     problem2 = cl.Problem(num_qubits=5, initial_state=problem1.to_bitstring())
     assert problem1.to_bitstring() == problem2.to_bitstring()
+
+    # dropping the phase bits
+    problem1 = cl.Problem(num_qubits=5, seed=4123)
+    problem2 = cl.Problem(num_qubits=5, initial_state=problem1.to_bitstring(drop_phase_bits=True))
+    assert np.array_equal(problem1.state.tableau[:,:-1], problem2.state.tableau[:,:-1])

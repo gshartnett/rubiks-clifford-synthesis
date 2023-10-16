@@ -60,6 +60,38 @@ class LinkedList:
         new_list.inserAtEnd(buffer.data)
         return new_list
 
+
+def pad_bitstring(bitstring_dropped, num_qubits):
+    """
+    Given a bitstring representation of a tableau with the phase bits dropped,
+    add in the phase bits (set to 0).
+
+    Parameters
+    ----------
+    bitstring_dropped : _type_
+        _description_
+    num_qubits : _type_
+        _description_
+
+    Returns
+    -------
+    _type_
+        _description_
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """
+    if len(bitstring_dropped) != (2*num_qubits) ** 2:
+        raise ValueError("Input bitstring should have length (2n)^2")
+    new_str = ''
+    for i in range(2*num_qubits):
+        new_str += bitstring_dropped[i*(2*num_qubits):(i+1)*(2*num_qubits)]
+        new_str += '0'
+    return new_str
+
+
 def max_random_sequence_length(num_qubits: int, scaling: str) -> int:
     """
     Generate the high parameter used to set the maximum length of the
@@ -471,14 +503,17 @@ class Problem:
         self.move_set_array = self.get_move_set_as_array()
         if initial_state is not None:
             if type(initial_state) is str:
-                initial_state_array = self.initial_state_from_bitstring(initial_state)
-                if self.drop_phase_bits:
-                    initial_state = Clifford(
-                        np.hstack((initial_state_array, np.zeros(2*self.num_qubits)[:, None]))
-                    )
+                if len(initial_state) == (2*num_qubits) * (2*num_qubits + 1):
+                    initial_state = np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+                    self.state = Clifford(initial_state)
+                elif len(initial_state) == (2*num_qubits) * (2*num_qubits):
+                    initial_state = pad_bitstring(bitstring_dropped=initial_state, num_qubits=num_qubits)
+                    initial_state = np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+                    self.state = Clifford(initial_state)
                 else:
-                    initial_state = Clifford(initial_state_array)
-            self.state = initial_state
+                    raise ValueError("Initial state is a string with invalid length.")
+            else:
+                self.state = Clifford(initial_state)
         elif sampling_method == "random_walk":
             if high is None:
                 high = int(20 * np.log(num_qubits) / np.log(2))
@@ -490,12 +525,6 @@ class Problem:
             self.state = random_clifford_uniform(num_qubits=num_qubits, seed=seed)
         else:
             raise NotImplementedError("sampling method not recognized")
-
-    def initial_state_from_bitstring(self, initial_state):
-        if not self.drop_phase_bits:
-            return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
-        else:
-            return np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits))
 
     def get_move_set(self) -> List:
         """
