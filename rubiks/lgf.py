@@ -504,7 +504,6 @@ def beam_search(
 
         # loop over nodes in current beam (maximum of beam_width items)
         # build a list of M neighbors for each beam node
-        time_point = time.time()
         neighbor_tensors = None
         for ll in beam:
 
@@ -522,8 +521,6 @@ def beam_search(
                 neighbor_tensors = node_problem.generate_neighbors()  # (M, 2N, 2N) array
             else:
                 neighbor_tensors = np.concatenate((neighbor_tensors, node_problem.generate_neighbors())) # (num_moves * M, 2N, 2N) array
-        #print(f"Time taken to build neighbor list of beams: {time.time() - time_point}")
-        #time_point = time.time()
 
         # list of the parent linked_list indices and move index for each neighbor
         parent_list = [(i // num_moves, i % num_moves) for i in range(neighbor_tensors.shape[0])] 
@@ -532,7 +529,6 @@ def beam_search(
         for i_neighbor, (idx_beam, idx_move) in enumerate(parent_list):
 
             #assert i_neighbor == idx_beam * num_moves + idx_move
-            
             neighbor_tensor = neighbor_tensors[i_neighbor]
 
             if np.array_equal(neighbor_tensor, identity_tensor):
@@ -567,68 +563,31 @@ def beam_search(
                     "linked_list": ll_new,
                     "move_history": move_history
                 }
-        #print(f"Time taken to check for solution: {time.time() - time_point}")
-        time_point = time.time()
 
         # compute LGF values for neighbors
         neighbor_tensors = torch.tensor(neighbor_tensors, dtype=torch.float32)
         with torch.no_grad():
             lgf_of_neighbors = lgf_model.forward(torch.flatten(neighbor_tensors, start_dim=1))
-        #print(f"Time taken to compute LGF values: {time.time() - time_point}")
-        time_point = time.time()
 
         # update beam
         new_beam = []
         lgf_of_neighbors_indices_sorted = torch.argsort(lgf_of_neighbors)
         neighbor_count = 0
-        #print(f"Number of neighbors to sort through: {len(lgf_of_neighbors_indices_sorted)}")
         while (len(new_beam) < beam_width) and (neighbor_count < len(lgf_of_neighbors_indices_sorted)):
             i_neighbor = lgf_of_neighbors_indices_sorted[neighbor_count]
             idx_beam, idx_move = parent_list[i_neighbor]
             neighbor_tensor = neighbor_tensors[i_neighbor].numpy()
-            #if drop_phase_bits:
-            #    neighbor_tensor = np.hstack((neighbor_tensor, np.zeros(2*num_qubits)[:, None]))
-            #neighbor_problem = cl.Problem(
-            #    num_qubits=lgf_model.num_qubits,
-            #    initial_state=Clifford(neighbor_tensor),
-            #    drop_phase_bits=drop_phase_bits,
-            #)
-            #neighbor_bitstring = neighbor_problem.to_bitstring(drop_phase_bits=drop_phase_bits)
-            #print(len(neighbor_bitstring))
-            #print(neighbor_bitstring)
             neighbor_bitstring = "".join(list(str(int(x)) for x in 1 * neighbor_tensor.flatten()))            
-            #print(len(neighbor_bitstring))
-            #print(neighbor_bitstring)
-            #assert 1==0
-
             if neighbor_bitstring not in visited_nodes:
-            #if True:
-                #print(f"neighbor_count={neighbor_count}")
-                ll_new = beam[idx_beam].copy()
-                
-                #x = ll_new.head.data['state']
-                #old_beam_state = hashlib.sha1(x.encode("utf-8")).hexdigest()
-
+                ll_new = beam[idx_beam].copy()                
                 move = problem.move_set[idx_move]
                 ll_new.insertAtBegin(data={"state": neighbor_bitstring, "move": move})
                 new_beam.append(ll_new)
-
-                #if neighbor_bitstring in visited_nodes:
-                    #x = ll_new.head.data['state']
-                    #new_beam_state = hashlib.sha1(x.encode("utf-8")).hexdigest()
-                    #print('\n I"VE BEEN HERE BEFORE!"')
-                    #print('move =', move)
-                    #print('old beam state = ', old_beam_state)
-                    #print('new beam state = ', new_beam_state)
-
                 visited_nodes.add(neighbor_bitstring)
-
             neighbor_count += 1
 
         beam = new_beam
         count += 1
-        #print(f"Time taken to update beam: {time.time() - time_point}")
-        time_point = time.time()
 
     return {
         "success": False,
