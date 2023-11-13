@@ -1,5 +1,11 @@
+import copy
 from datetime import datetime
-from typing import Dict, List, Tuple, Union
+from typing import (
+    Dict,
+    List,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import torch
@@ -7,10 +13,14 @@ import tqdm
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Clifford
 from qiskit.synthesis import synth_clifford_full
-from torch import nn, optim
+from torch import (
+    nn,
+    optim,
+)
 from torch.utils.tensorboard import SummaryWriter
-
-import clifford as cl
+import time
+import hashlib
+import rubiks.clifford as cl
 
 
 class LGFModel(nn.Module):
@@ -118,10 +128,7 @@ class LGFModel(nn.Module):
         date = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         writer = SummaryWriter(f"runs/date_{date}_num_qubits_{self.num_qubits}")
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=100,
-        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100,)
         loss_current = np.inf
 
         ## loop over "epochs"
@@ -186,8 +193,8 @@ def pearson_correlation(input_sequence_1: torch.Tensor, input_sequence_2: torch.
     delta_2 = input_sequence_2 - torch.mean(input_sequence_2, axis=0, keepdim=True)
     corr = torch.sum(delta_1 * delta_2, dim=0, keepdim=True)
     corr = corr / (
-        torch.sqrt(torch.sum(delta_1**2 + pearson_eps, dim=0, keepdim=True))
-        * torch.sqrt(torch.sum(delta_2**2 + pearson_eps, dim=0, keepdim=True))
+        torch.sqrt(torch.sum(delta_1 ** 2 + pearson_eps, dim=0, keepdim=True))
+        * torch.sqrt(torch.sum(delta_2 ** 2 + pearson_eps, dim=0, keepdim=True))
     )
     corr = torch.mean(corr)
     return corr
@@ -236,9 +243,7 @@ def conv2d_output_dimensions(
 
 
 def hillclimbing_random(
-    initial_state: Clifford,
-    max_iter: int = 1000,
-    seed: int = 123,
+    initial_state: Clifford, max_iter: int = 1000, seed: int = 123,
 ) -> Dict:
     """
     A simple random walk algorithm for solving the synthesis problem.
@@ -342,31 +347,9 @@ def hillclimbing(
 
     ## loop over iterations
     for _ in range(max_iter):
-        ## build array of candidates
-        if lgf_model.drop_phase_bits:
-            candidates = (
-                np.einsum(
-                    "ij, mjk -> mik",
-                    1 * problem.state.tableau[:, :-1],
-                    problem.move_set_array,
-                )
-                % 2
-            )
-        else:
-            """
-            This is quite slow. I did some profiling experiments and confirmed that the bottleneck is
-            the first line where the tableau composition is performed, and not the casting to a numpy
-            array.
 
-            To improve this, we would need to implement a vectorized version of the `_compose_general`
-            classmethod defined here:
-            https://qiskit.org/documentation/_modules/qiskit/quantum_info/operators/symplectic/clifford.html#Clifford.compose
-            """
-            candidates = [
-                problem.state & tableau for tableau in problem.move_set_tableau.values()
-            ]
-            # candidates = [tableau & problem.state for tableau in problem.move_set_tableau.values()]
-            candidates = np.asarray([candidate.tableau for candidate in candidates])
+        ## build array of candidates
+        candidates = problem.generate_neighbors()
 
         ## check to see if any of the candidates are the solution
         for i_move in range(num_moves):
@@ -447,14 +430,182 @@ def hillclimbing(
     return result
 
 
+def beam_search(
+    initial_state: Clifford,
+    lgf_model: nn.Module,
+    beam_width: int = 1,
+    max_iter: int = 100,
+    drop_phase_bits=True,
+    check = False,
+) -> Dict:
+    """
+    1. batch the computation of the LGF
+    2. only compute LL for retained guys
+
+    Beam search function using the learned guidance function output as the heuristic.
+    If the search succeeds, then it will produce a linked list whose node sequence implements the inverse of the initial Clifford.
+    In particular, 
+        initial_state @ cl.sequence_to_tableau(results_dict['linked_list'].get_move_list()[:-1][::-1], num_qubits=num_qubits)
+    will be the identity. The [:-1] removes the initial move (None), and the [::-1] reverses the sequence since the linked list
+    is ordered from most recently visited node to the starting node (i.e., in reverse order).
+
+    For beam_width=1 reduces to the Greedy "hillclimbing" algorithm.
+
+    Parameters
+    ----------
+    initial_state : Clifford
+        The initial state.
+    lgf_model : nn.Module
+        A learned guidance function model.
+    beam_width : int, optional
+        The beam width, by default 1.
+    max_iter : int, optional
+        The maximum number of steps to consider, by default 100.
+    drop_phase_bits : bool, optional
+        Whether the phase bits should be dropped, by default True.
+
+    Returns
+    -------
+    Dict
+        A results dictionary.
+    """
+    # initialize the starting node
+    problem = cl.Problem(
+        lgf_model.num_qubits, 
+        initial_state=initial_state, 
+        drop_phase_bits=drop_phase_bits
+        )
+    num_qubits = problem.num_qubits
+    num_moves = len(problem.move_set)
+    
+    # check for solution
+    if problem.is_solution():
+        return {
+            "success": True,
+            "count": 0,
+            "linked_list": None,
+            "move_history": []
+            }
+
+    # initialize the linked list
+    linked_list = cl.LinkedList()
+    linked_list.insertAtBegin(data={"state": problem.to_bitstring(drop_phase_bits=drop_phase_bits), "move": None})
+
+    # identity tensor
+    identity_tensor = 1 * cl.sequence_to_tableau([], num_qubits).tableau
+    if drop_phase_bits:
+        identity_tensor = identity_tensor[:, :-1]
+
+    # perform the search
+    beam = [linked_list]
+    visited_nodes = {problem.to_bitstring()}
+    count = 1
+    while (len(beam) > 0) and (count < max_iter):
+
+        # loop over nodes in current beam (maximum of beam_width items)
+        # build a list of M neighbors for each beam node
+        neighbor_tensors = None
+        for ll in beam:
+
+            # grab the neighbors
+            node = ll.head
+            node_state = node.data["state"]
+            node_problem = cl.Problem(
+                num_qubits=num_qubits, 
+                initial_state=node_state, 
+                drop_phase_bits=drop_phase_bits,
+            )
+
+            # stack the neighbor tableaus into one big array
+            if neighbor_tensors is None:
+                neighbor_tensors = node_problem.generate_neighbors()  # (M, 2N, 2N) array
+            else:
+                neighbor_tensors = np.concatenate((neighbor_tensors, node_problem.generate_neighbors())) # (num_moves * M, 2N, 2N) array
+
+        # list of the parent linked_list indices and move index for each neighbor
+        parent_list = [(i // num_moves, i % num_moves) for i in range(neighbor_tensors.shape[0])] 
+
+        # check for solution
+        for i_neighbor, (idx_beam, idx_move) in enumerate(parent_list):
+
+            #assert i_neighbor == idx_beam * num_moves + idx_move
+            neighbor_tensor = neighbor_tensors[i_neighbor]
+
+            if np.array_equal(neighbor_tensor, identity_tensor):
+
+                # pad state with a trivial set of phase bits
+                if drop_phase_bits:
+                    neighbor_tensor = np.hstack((neighbor_tensor, np.zeros(2*num_qubits)[:, None]))
+
+                neighbor_problem = cl.Problem(
+                    num_qubits=lgf_model.num_qubits,
+                    initial_state=Clifford(neighbor_tensor),
+                    drop_phase_bits=drop_phase_bits,
+                )
+                neighbor_state = neighbor_problem.to_bitstring(drop_phase_bits=drop_phase_bits)
+                move = problem.move_set[idx_move]
+                ll_new = beam[idx_beam].copy()
+                ll_new.insertAtBegin(data={"state": neighbor_state, "move": move})
+                move_history = ll_new.get_move_list()[:-1][::-1]
+
+                if check:
+                    state = initial_state @ cl.sequence_to_tableau(move_history, num_qubits=num_qubits)
+                    if not drop_phase_bits:
+                        if not np.array_equal(state.tableau, cl.sequence_to_tableau([], num_qubits=num_qubits).tableau):
+                            raise ValueError("Error, solution identity is not respected, likely problem with beam_search function.")
+                    else:
+                        if not np.array_equal(state.tableau[:,:-1], cl.sequence_to_tableau([], num_qubits=num_qubits).tableau[:,:-1]):
+                            raise ValueError("Error, solution identity is not respected, likely problem with beam_search function.")
+
+                return {
+                    "success": True,
+                    "count": count + 1,
+                    "linked_list": ll_new,
+                    "move_history": move_history
+                }
+
+        # compute LGF values for neighbors
+        neighbor_tensors = torch.tensor(neighbor_tensors, dtype=torch.float32)
+        with torch.no_grad():
+            lgf_of_neighbors = lgf_model.forward(torch.flatten(neighbor_tensors, start_dim=1))
+
+        # update beam
+        new_beam = []
+        lgf_of_neighbors_indices_sorted = torch.argsort(lgf_of_neighbors)
+        neighbor_count = 0
+        while (len(new_beam) < beam_width) and (neighbor_count < len(lgf_of_neighbors_indices_sorted)):
+            i_neighbor = lgf_of_neighbors_indices_sorted[neighbor_count]
+            idx_beam, idx_move = parent_list[i_neighbor]
+            neighbor_tensor = neighbor_tensors[i_neighbor].numpy()
+            neighbor_bitstring = "".join(list(str(int(x)) for x in 1 * neighbor_tensor.flatten()))            
+            if neighbor_bitstring not in visited_nodes:
+                ll_new = beam[idx_beam].copy()                
+                move = problem.move_set[idx_move]
+                ll_new.insertAtBegin(data={"state": neighbor_bitstring, "move": move})
+                new_beam.append(ll_new)
+                visited_nodes.add(neighbor_bitstring)
+            neighbor_count += 1
+
+        beam = new_beam
+        count += 1
+
+    return {
+        "success": False,
+        "count": count,
+        "linked_list": None,
+        "move_history": None,
+    }
+
+
 def compute_weighted_steps_until_success(
     lgf_model: nn.Module,
     weight_dict: Dict,
     num_trials: int = 100,
     max_iter: int = int(1e4),
-    method: str = "lgf",
+    method: str = "hillclimbing",
     high: Union[int, None] = None,
     sampling_method="random_walk",
+    beam_width: int = 5,
 ) -> Dict:
     """
     Apply the hillclimbing algorithm a number of times to find the
@@ -471,7 +622,7 @@ def compute_weighted_steps_until_success(
     max_iter : int, optional
         Maximum number of iterations, by default 10,000.
     method : str, optional
-        Method to use, by default 'lgf'.
+        Method to use, by default 'hillclimbing'.
 
     Returns
     -------
@@ -499,19 +650,18 @@ def compute_weighted_steps_until_success(
         )
 
         ## apply the synthesis method
-        if method == "lgf":
-            result = hillclimbing(
-                problem.state,
-                lgf_model,
+        if method == "hillclimbing":
+            # I don't think the seed is being used here
+            result = hillclimbing(problem.state, lgf_model, max_iter=max_iter, seed=k,)
+        elif method == "beamsearch":
+            result = beam_search(
+                initial_state=problem.state,
+                lgf_model=lgf_model,
+                beam_width=beam_width,
                 max_iter=max_iter,
-                seed=k,
             )
         elif method == "random":
-            result = hillclimbing_random(
-                problem.state,
-                max_iter=max_iter,
-                seed=k,
-            )
+            result = hillclimbing_random(problem.state, max_iter=max_iter, seed=k,)
         elif method == "qiskit":
             ## hacky way to put the Qiskit results in the same data structure as the above
             result = {

@@ -119,3 +119,77 @@ def test_move_set(num_trials=50, num_qubits_min=2, num_qubits_max=9):
                 assert circ_gates.issubset(gate_set)
             except:
                 raise NotImplementedError("Gate sets do not match!")
+
+
+def test_to_and_from_bitstring():
+    """
+    Check that a problem instance initialized from a bitstring agrees with the problem instance whose
+    state corresponds to that same bitstring.
+    """
+    # keeping the phase bits
+    problem1 = cl.Problem(num_qubits=5, drop_phase_bits=False)
+    problem2 = cl.Problem(num_qubits=5, initial_state=problem1.to_bitstring())
+    assert problem1.to_bitstring() == problem2.to_bitstring()
+
+    # dropping the phase bits
+    problem1 = cl.Problem(num_qubits=5, seed=4123)
+    problem2 = cl.Problem(num_qubits=5, initial_state=problem1.to_bitstring(drop_phase_bits=True))
+    assert np.array_equal(problem1.state.tableau[:,:-1], problem2.state.tableau[:,:-1])
+
+
+def test_tableau_z_composition():
+    '''
+    Test the derived update rule for tableau composition with a
+    Pauli Z:
+        r_i \leftarrow r_i + x_{ia} (mod 2)
+    '''
+    problem = cl.Problem(num_qubits=6, seed=np.random.randint(low=100000000))
+    initial_state = 1*problem.state.tableau
+
+    qubit_idx = 0
+    problem.apply_move((qubit_idx, 'z'), inplace=True)
+    final_state = 1*problem.state.tableau
+
+    # check that matrix parts of tableaus agree
+    assert np.array_equal(initial_state[:,:-1], final_state[:,:-1])
+
+    # check that the new phase bit obeys the derived relation
+    for i in range(2*problem.num_qubits):
+        ri_initial = initial_state[i, -1]
+
+        xia_initial = initial_state[i, qubit_idx]
+        zia_initial = initial_state[i, qubit_idx + problem.num_qubits]
+        ri_final = final_state[i, -1]
+
+        ri_final_computed = (ri_initial + xia_initial) % 2
+
+        assert ri_final_computed == ri_final
+
+
+def test_tableau_x_composition():
+    '''
+    Test the derived update rule for tableau composition with a
+    Pauli X:
+        r_i \leftarrow r_i + z_{ia} (mod 2)
+    '''
+    problem = cl.Problem(num_qubits=6, seed=np.random.randint(low=100000000))
+    initial_state = 1*problem.state.tableau
+
+    qubit_idx = 0
+    problem.apply_move((qubit_idx, 'x'), inplace=True)
+    final_state = 1*problem.state.tableau
+
+    # check that matrix parts of tableaus agree
+    assert np.array_equal(initial_state[:,:-1], final_state[:,:-1])
+
+    # check that the new phase bit obeys the derived relation
+    for i in range(2*problem.num_qubits):
+        ri_initial = initial_state[i, -1]
+
+        xia_initial = initial_state[i, qubit_idx]
+        zia_initial = initial_state[i, qubit_idx + problem.num_qubits]
+        ri_final = final_state[i, -1]
+
+        ri_final_computed = (ri_initial + zia_initial) % 2
+
+        assert ri_final_computed == ri_final

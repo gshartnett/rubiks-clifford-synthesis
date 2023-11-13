@@ -11,6 +11,87 @@ from qiskit.quantum_info import random_clifford as random_clifford_uniform
 GATES = ["h", "s", "sdg", "x", "y", "z", "cx", "swap"]
 
 
+class Node:
+     # Node class for linked list
+	def __init__(self, data):
+		self.data = data
+		self.next = None
+
+
+class LinkedList:
+    def __init__(self):
+        self.head = None
+ 
+    def insertAtBegin(self, data):
+        # add a node at begin of linked list
+        new_node = Node(data)
+        if self.head is None:
+            self.head = new_node
+            return
+        else:
+            new_node.next = self.head
+            self.head = new_node
+
+    def inserAtEnd(self, data):
+        new_node = Node(data)
+        if self.head is None:
+            self.head = new_node
+            return
+        current_node = self.head
+        while(current_node.next):
+            current_node = current_node.next    
+        current_node.next = new_node
+        
+    def get_move_list(self):
+        # make a pass through the list and retrieve the moves
+        move_list = []
+        current_node = self.head
+        while(current_node):
+            move_list.append(current_node.data['move'])
+            current_node = current_node.next
+        return move_list
+    
+    def copy(self):
+        new_list = LinkedList()
+        buffer = self.head
+        while buffer.next != None:
+            new_list.inserAtEnd(buffer.data)
+            buffer= buffer.next
+        new_list.inserAtEnd(buffer.data)
+        return new_list
+
+
+def pad_bitstring(bitstring_dropped, num_qubits):
+    """
+    Given a bitstring representation of a tableau with the phase bits dropped,
+    add in the phase bits (set to 0).
+
+    Parameters
+    ----------
+    bitstring_dropped : _type_
+        _description_
+    num_qubits : _type_
+        _description_
+
+    Returns
+    -------
+    _type_
+        _description_
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """
+    if len(bitstring_dropped) != (2*num_qubits) ** 2:
+        raise ValueError("Input bitstring should have length (2n)^2")
+    new_str = ''
+    for i in range(2*num_qubits):
+        new_str += bitstring_dropped[i*(2*num_qubits):(i+1)*(2*num_qubits)]
+        new_str += '0'
+    return new_str
+
+
 def max_random_sequence_length(num_qubits: int, scaling: str) -> int:
     """
     Generate the high parameter used to set the maximum length of the
@@ -58,7 +139,7 @@ def normalize_dict(input_dict: Dict) -> Dict:
     return new_dict
 
 
-def bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
+def TODELETE_bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
     """
     Convert a bit string into a tableau, represented as a binary numpy
     array.
@@ -83,9 +164,10 @@ def bitstr_to_array(bitstr: str, num_qubits: int) -> np.ndarray:
     return arr
 
 
-def array_to_bitstr(arr: np.ndarray) -> str:
+def TODELETE_array_to_bitstr(arr: np.ndarray) -> str:
     """
     Convert a binary numpy array into a bitstring.
+    The array should be 1D.
 
     Parameters
     ----------
@@ -420,7 +502,18 @@ class Problem:
         self.move_set_tableau = self.get_move_set_as_tableaus()
         self.move_set_array = self.get_move_set_as_array()
         if initial_state is not None:
-            self.state = initial_state
+            if type(initial_state) is str:
+                if len(initial_state) == (2*num_qubits) * (2*num_qubits + 1):
+                    initial_state = np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+                    self.state = Clifford(initial_state)
+                elif len(initial_state) == (2*num_qubits) * (2*num_qubits):
+                    initial_state = pad_bitstring(bitstring_dropped=initial_state, num_qubits=num_qubits)
+                    initial_state = np.array(list(initial_state), dtype=np.int).reshape((2*self.num_qubits, 2*self.num_qubits+1))
+                    self.state = Clifford(initial_state)
+                else:
+                    raise ValueError("Initial state is a string with invalid length.")
+            else:
+                self.state = Clifford(initial_state)
         elif sampling_method == "random_walk":
             if high is None:
                 high = int(20 * np.log(num_qubits) / np.log(2))
@@ -559,9 +652,7 @@ class Problem:
             ):
                 return True
         else:
-            if np.array_equal(
-                1 * self.state.tableau, sequence_to_tableau([], self.num_qubits)
-            ):
+            if self.state == sequence_to_tableau([], self.num_qubits):
                 return True
         return False
 
@@ -590,7 +681,7 @@ class Problem:
                 return move
         return None
 
-    def to_bitstring(self) -> str:
+    def to_bitstring(self, drop_phase_bits=None) -> str:
         """
         Flatten the tableau into a bitstring.
         Used to check whether a given tableau has been seen before.
@@ -600,4 +691,49 @@ class Problem:
         str
             The bitstring.
         """
-        return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+        if drop_phase_bits is None:
+            drop_phase_bits = self.drop_phase_bits
+
+        if not drop_phase_bits:
+            return "".join(list(str(x) for x in 1 * self.state.tableau.flatten()))
+        else:
+            return "".join(list(str(x) for x in 1 * self.state.tableau[:,:-1].flatten()))
+
+    
+    def generate_neighbors(self) -> np.ndarray:
+        """
+        Generate the neighbors of the current state.
+        Neighbors are formatted as numpy arrays.
+
+        Returns
+        -------
+        np.ndarray
+            An array of shape (M, 2*N, 2*N+1) or (M, 2*N, 2*N) containing the M neighbors 
+            of the current state (the difference is whether the phase bits are dropped or not)
+
+        """
+        if self.drop_phase_bits:
+            neighbors = (
+                np.einsum(
+                    "ij, mjk -> mik",
+                    1 * self.state.tableau[:, :-1],
+                    self.move_set_array,
+                )
+                % 2
+            )
+        else:
+            """
+            This is quite slow. I did some profiling experiments and confirmed that the bottleneck is
+            the first line where the tableau composition is performed, and not the casting to a numpy
+            array.
+
+            To improve this, we would need to implement a vectorized version of the `_compose_general`
+            classmethod defined here:
+            https://qiskit.org/documentation/_modules/qiskit/quantum_info/operators/symplectic/clifford.html#Clifford.compose
+            """
+            neighbors = [
+                self.state & tableau for tableau in self.move_set_tableau.values()
+            ]
+            neighbors = np.asarray([neighbor.tableau for neighbor in neighbors])
+
+        return neighbors
