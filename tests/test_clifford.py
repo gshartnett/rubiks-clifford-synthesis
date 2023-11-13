@@ -7,6 +7,32 @@ from qiskit.synthesis import synth_clifford_full
 import rubiks.clifford as cl
 
 
+
+def test_symplectic_condition():
+    """
+    Test that the symplectic condition holds for a randomly generated tableau,
+        (tableau)^T \Omega tableau = \Omega,
+    where tableau is the 2n x 2n square matrix part fo the tableau (phase bits dropped)
+    and \Omega is the block matrix [[0_n, I_n], [-I_n, 0_n]]
+    """
+    num_qubits = 10
+    rng = np.random.default_rng()
+    sequence = cl.random_sequence(rng=rng, seq_length=100, num_qubits=num_qubits)
+    clifford = cl.sequence_to_tableau(sequence=sequence, num_qubits=num_qubits)
+    tableau_square = 1.0 * clifford.tableau[:,:-1]
+
+    omega = np.block(
+        [
+            [np.zeros((num_qubits, num_qubits)), np.eye(num_qubits)], 
+            [np.eye(num_qubits), np.zeros((num_qubits, num_qubits))]]
+        )
+
+    assert np.array_equal(
+        (np.dot(np.transpose(tableau_square, (1, 0)), np.dot(omega, tableau_square)) % 2),
+        omega
+    )
+
+
 def test_tableau_composition_no_phase_bits():
     """
     Check that two arbitrary tableaus (with the phase bit omitted)
